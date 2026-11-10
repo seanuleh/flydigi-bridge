@@ -16,6 +16,7 @@ Files:
   - Addresses, names and the player order are kept in flash (`/fdbridge.cfg` on the core's LittleFS,
     with magic, version and CRC-32). The first boot, or a corrupt file, writes the defaults: slot 0 = Red
     `69cc966cee`, slot 1 = Blue `66cc69c6ee`, Blue first in the player order.
+  - TX power +8 dBm (the maximum; affects only our acks).
   - Pipes 0 and 1 have separate bases and prefix bytes, so any two addresses fit.
   - Flash is only written by config commands. The radio is stopped around the write; connected controllers
     ride it out (checked: no drop).

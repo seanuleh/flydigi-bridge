@@ -104,7 +104,7 @@ static void radio_init() {
   radio_off();
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit << RADIO_MODE_MODE_Pos;
   NRF_RADIO->MODECNF0 = RADIO_MODECNF0_RU_Default << RADIO_MODECNF0_RU_Pos;
-  NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_0dBm;
+  NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos8dBm;   // max; only affects our acks (controllers -> bridge is their power)
   NRF_RADIO->FREQUENCY = channel;
   NRF_RADIO->PCNF0 = (6 << RADIO_PCNF0_LFLEN_Pos) | (3 << RADIO_PCNF0_S1LEN_Pos);
   NRF_RADIO->PCNF1 = (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) | (32 << RADIO_PCNF1_MAXLEN_Pos);
