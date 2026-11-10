@@ -688,7 +688,10 @@ static bool hunting() {
 static void scan_step() {
   if (!hunting() || millis() - last_hop < 25) return;
   last_hop = millis();
-  do channel = (channel >= 80) ? 2 : channel + 1; while (cq_cooling(channel));
+  // Every channel cooling (a weak link looks bad everywhere) used to spin here forever: clear the cooldowns.
+  int tries = 0;
+  do channel = (channel >= 80) ? 2 : channel + 1; while (cq_cooling(channel) && ++tries < 79);
+  if (tries >= 79) memset(cq_bad_until, 0, sizeof cq_bad_until);
   radio_init();
 }
 

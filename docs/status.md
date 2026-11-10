@@ -39,6 +39,19 @@ Last updated 2026-11-10.
   controllers alike) turned out to be the channel itself, not hardware. The bridge now leaves a bad channel by
   itself and the controllers follow without dropping (firmware.md, "Channel quality").
 
+- **Couch baseline (HTPC, 2026-11-10, chip antenna, 60 s on channel 5):** the living room is busy
+  (Wi-Fi AP close by on Wi-Fi ch 4, ESP-NOW devices, Bluetooth, an Xbox Wireless Adapter).
+  - Red: RSSI −67 to −79 dBm, mostly 90–99 reports a second, with dips to 36–55 during CRC-error bursts
+    (`bad` up to 75 a second): interference.
+  - Blue: −83 to −85 dBm, held a link for only about 12 of 60 s (at −74 to −77 while it did). At the edge
+    of receive range.
+  - Red's player number flips 1↔2 each time Blue links and unlinks.
+  - For comparison, open air near the controllers on the cable gave about −40 dBm.
+- **Fixed: hang when every channel is cooling (2026-11-10).** On a weak link every channel looks bad, so
+  automatic moves cooled all of 2–80 within a few minutes. `scan_step` then looped forever, USB froze, and
+  only a replug recovered it (a PC restart doesn't cut USB power). The loop is now bounded and clears the
+  cooldowns. Flashed on the HTPC; not yet seen under the condition that triggered it.
+
 ## Known issues and limits
 
 - macOS shows only the first of the two Xbox interfaces, and none at all in the default (Windows composite)
