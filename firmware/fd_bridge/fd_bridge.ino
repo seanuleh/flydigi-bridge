@@ -29,7 +29,9 @@ static int8_t verbose_slot = -1;
 // Reply to non-report packets (search pings, 21-B handshake): 0='02', 1='02 aa <b19+1> 00' (needed for handshake),
 // 2=none, 3='02 aa <b19> 00', 4=free-running clock, 5=clock for pings + '02' for 21-B
 static volatile uint8_t other_mode = 1;
-static bool scan_enabled = true;
+static bool scan_enabled = true;      // channel hunting and automatic channel moves ("channel auto")
+static uint32_t cq_moved_ms = 0;       // last automatic channel move (hunting pauses so controllers can follow)
+#define CQ_GRACE_MS 6000
 static uint8_t pipe_mask = 0x03;   // debug override (`p<mask>`); ANDed with the used slots
 static uint8_t pipes_enabled() {
   uint8_t m = 0;
@@ -269,8 +271,8 @@ struct Tele { uint32_t prev_new, prev_dup; uint16_t rate, dup; };
 static Tele tele[NSLOT];
 static uint32_t prev_bad, tele_ms;
 static uint16_t bad_rate;
-static void update_tele() {              // per-second rates
-  if (millis() - tele_ms < 1000) return;
+static bool update_tele() {              // per-second rates; true once a second
+  if (millis() - tele_ms < 1000) return false;
   tele_ms = millis();
   for (int i = 0; i < NSLOT; i++) {
     uint32_t nn = slot[i].n_new, nd = slot[i].n_dup;
@@ -278,6 +280,7 @@ static void update_tele() {              // per-second rates
     tele[i].prev_new = nn; tele[i].prev_dup = nd;
   }
   bad_rate = n_bad - prev_bad; prev_bad = n_bad;
+  return true;
 }
 static bool hunting();
 
@@ -507,6 +510,55 @@ static void learn_step() {
   if (now - learn_msg_ms >= 500) { learn_msg_ms = now; learn_msg("listening"); }
 }
 
+
+// ───────────────────────── channel quality ─────────────────────────
+// When the connected controllers' average report rate stays below CQ_BAD_RATE for CQ_BAD_SECS, leave the
+// channel (it cools down for 5 minutes). Controllers only search a set of channels of their own, so the bridge
+// moves to the best channel where it has had controllers before (they followed from 55 to 12 within 2 s), and
+// otherwise hunts, skipping channels that are cooling down. (2026-11-10: a jump to 25, not in their set, cost a
+// 6 s drop.) A channel that stays good for a minute is saved and used after the next boot.
+#define CQ_BAD_RATE 85
+#define CQ_BAD_SECS 3
+#define CQ_COOLDOWN_MS 300000
+#define CQ_SAVE_MS 60000
+static uint8_t cq_bad_secs = 0;
+static uint32_t cq_good_since = 0, cq_bad_until[101];
+static uint8_t cq_score[101];           // smoothed average reports/s seen on each channel; 0 = never had controllers
+static bool cq_cooling(uint8_t c) { return cq_bad_until[c] && (int32_t)(millis() - cq_bad_until[c]) < 0; }
+static void channel_monitor() {
+  if (!scan_enabled || learn_state != L_OFF) return;
+  int n = 0, sum = 0;
+  for (int i = 0; i < NSLOT; i++) if (slot_up(i)) { n++; sum += tele[i].rate; }
+  uint32_t now = millis();
+  if (!n) { cq_bad_secs = 0; cq_good_since = 0; return; }
+  int avg = sum / n;
+  if (now - cq_moved_ms < 2000) return;   // first second on a new channel is partial
+  cq_score[channel] = cq_score[channel] ? (cq_score[channel] * 3 + avg) / 4 : (avg ? avg : 1);
+  if (avg >= CQ_BAD_RATE) {
+    cq_bad_secs = 0;
+    if (!cq_good_since) cq_good_since = now;
+    if (cfg.channel != channel && now - cq_good_since > CQ_SAVE_MS) { cfg.channel = channel; save_cfg(); }
+    return;
+  }
+  cq_good_since = 0;
+  if (++cq_bad_secs < CQ_BAD_SECS) return;
+  cq_bad_secs = 0;
+  cq_bad_until[channel] = now + CQ_COOLDOWN_MS;
+  uint8_t next = 0;
+  for (int c = 2; c <= 80; c++)
+    if (c != channel && cq_score[c] && !cq_cooling(c) && (!next || cq_score[c] > cq_score[next])) next = c;
+  if (next) {
+    Serial.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, moving to %u\"}\n", channel, avg, next);
+    channel = next;
+    cq_moved_ms = now;                  // hunting waits CQ_GRACE_MS for the controllers to follow
+  } else {
+    Serial.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, searching for a better one\"}\n", channel, avg);
+    channel = (channel >= 80) ? 2 : channel + 1;
+    cq_moved_ms = now - CQ_GRACE_MS;    // no grace: hunt straight away
+  }
+  radio_init();
+}
+
 // Returns false if the line isn't a word command.
 static bool handle_word(char *line) {
   char *save, *w = strtok_r(line, " ", &save);
@@ -619,6 +671,7 @@ void setup() {
   if (TinyUSBDevice.mounted()) { TinyUSBDevice.detach(); delay(10); TinyUSBDevice.attach(); }
   Serial.begin(115200);
   store_load();
+  if (cfg.channel >= 2 && cfg.channel <= 80) channel = cfg.channel;
   NRF_CLOCK->TASKS_HFCLKSTART = 1;
   while (!NRF_CLOCK->EVENTS_HFCLKSTARTED);
   NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
@@ -628,14 +681,14 @@ void setup() {
 
 static uint32_t last_hop = 0;
 static bool hunting() {
-  if (!scan_enabled) return false;
+  if (!scan_enabled || millis() - cq_moved_ms < CQ_GRACE_MS) return false;
   for (int i = 0; i < NSLOT; i++) if (cfg.slot[i].used && millis() - slot[i].last_ms < 1000 && slot[i].last_ms) return false;
   return millis() - any_rx_ms >= 300;
 }
 static void scan_step() {
   if (!hunting() || millis() - last_hop < 25) return;
   last_hop = millis();
-  channel = (channel >= 80) ? 2 : channel + 1;
+  do channel = (channel >= 80) ? 2 : channel + 1; while (cq_cooling(channel));
   radio_init();
 }
 
@@ -649,7 +702,7 @@ void loop() {
     else if (cl < (int)sizeof(cmd) - 1) cmd[cl++] = ch;
   }
   update_players();
-  update_tele();
+  if (update_tele()) channel_monitor();
   for (int i = 0; i < NSLOT; i++) {
     int x = itf_of[i];
     if (!slot[i].fresh) continue;

@@ -32,6 +32,10 @@ Last updated 2026-11-10.
     player choice. Renders in demo mode (`?demo`); **not yet used against the real bridge** (needs the
     port picker click).
 
+- **Automatic channel moves (2026-11-10, Mac):** heavy loss on one channel (about 35 of 100 reports, both
+  controllers alike) turned out to be the channel itself, not hardware. The bridge now leaves a bad channel by
+  itself and the controllers follow without dropping (firmware.md, "Channel quality").
+
 ## Known issues and limits
 
 - macOS shows only the first of the two Xbox interfaces, and none at all in the default (Windows composite)

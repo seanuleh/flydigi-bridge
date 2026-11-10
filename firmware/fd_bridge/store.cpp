@@ -2,6 +2,7 @@
 // Flash erase/write halts the CPU (about 85 ms per page erase), so callers only save on explicit config
 // commands, never during normal running, and stop the radio around it so controllers just retransmit.
 #include <Arduino.h>
+#include <stddef.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include "store.h"
@@ -10,7 +11,8 @@ using namespace Adafruit_LittleFS_Namespace;
 
 #define CFG_FILE "/fdbridge.cfg"
 #define CFG_MAGIC 0x46444231u   // "FDB1"
-#define CFG_VERSION 1
+#define CFG_VERSION 2
+#define CFG_V1_LEN offsetof(Config, channel)   // version 1 had no channel field
 
 Config cfg;
 
@@ -44,9 +46,11 @@ bool store_load(void) {
   File f(InternalFS);
   if (f.open(CFG_FILE, FILE_O_READ)) {
     Header h; Config c; uint32_t crc;
-    bool ok = f.read(&h, sizeof h) == sizeof h && h.magic == CFG_MAGIC && h.version == CFG_VERSION &&
-              h.len == sizeof c && f.read(&c, sizeof c) == sizeof c && f.read(&crc, 4) == 4 &&
-              crc == crc32((const uint8_t *)&c, sizeof c);
+    memset(&c, 0, sizeof c);
+    bool ok = f.read(&h, sizeof h) == sizeof h && h.magic == CFG_MAGIC &&
+              ((h.version == CFG_VERSION && h.len == sizeof c) || (h.version == 1 && h.len == CFG_V1_LEN)) &&
+              f.read(&c, h.len) == h.len && f.read(&crc, 4) == 4 && crc == crc32((const uint8_t *)&c, h.len);
+    if (ok && h.version == 1) c.channel = 0;
     f.close();
     if (ok) {
       cfg = c;

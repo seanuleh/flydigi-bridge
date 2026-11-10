@@ -27,6 +27,18 @@ Files:
 - **Replies:**
   - report → `02 aa <r30+1> 00`
   - anything else → `02 aa <b19+1> 00` (`other_mode=1`; see protocol.md, "Reconnect handshake")
+- **Channel quality (automatic moves):** controllers follow the bridge to another channel, but only to
+  channels in their own search set.
+  - Every second the bridge takes the average report rate of the connected controllers and keeps a score
+    per channel. Below 85 a second for 3 seconds: the channel cools down for 5 minutes and the bridge moves
+    to the best-scoring channel where it has had controllers before; with none, it hunts (skipping cooling
+    channels). Hunting pauses 6 s after a move so the controllers can follow.
+  - A channel that stays good for a minute is saved in flash and used at the next boot.
+  - `channel <n>` fixes the channel and turns this off; `channel auto` turns it back on.
+  - Moves are reported as `{"type":"log","msg":"channel 55: 35 reports/s, moving to 40"}`.
+  - Tested 2026-11-10 on the Mac: channel 55 gave about 35 reports a second on both controllers (Wi-Fi band),
+    channel 12 gave 100. Forced back to 55, the bridge moved to 40 after 3 s and both controllers followed
+    with no drop. A jump to a channel outside their set (25) cost a 6 s drop, hence the "seen before" rule.
 - **Channel hunting:**
   - If no slot has had a report for 1 s and nothing was heard for 300 ms, step through channels 2–80,
     25 ms each.

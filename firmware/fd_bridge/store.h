@@ -14,6 +14,7 @@ struct SlotCfg {
 struct Config {
   SlotCfg slot[NSLOT];  // slot n = radio pipe n
   uint8_t order[NSLOT]; // player priority: order[0] is player 1 when connected (see docs/firmware.md)
+  uint8_t channel;      // last channel that worked well (0 = none yet); added in config version 2
 };
 
 extern Config cfg;
