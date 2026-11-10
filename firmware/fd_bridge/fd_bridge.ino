@@ -19,7 +19,7 @@
 #endif
 // Bump when the MS OS descriptors change: Windows caches them per VID/PID/bcdDevice.
 #define USB_BCD_DEVICE 0x0101
-#define FW_VERSION "0.2.1"
+#define FW_VERSION "0.2.2"
 #include "xinput.h"
 #include "store.h"
 
@@ -320,7 +320,7 @@ static bool remap_due = true;
 static bool slot_up(int i) { return cfg.slot[i].used && millis() - slot[i].last_ms < 500 && slot[i].last_ms; }
 
 static void update_players() {
-  bool changed = remap_due;
+  bool changed = remap_due, reorder = remap_due;
   remap_due = false;
   uint32_t now = millis();
   for (int i = 0; i < NSLOT; i++) {
@@ -330,8 +330,17 @@ static void update_players() {
   }
   if (!changed) return;
   int8_t want[XI_MAX] = {-1, -1};
-  int n = 0;
-  for (int k = 0; k < NSLOT; k++) { int s = cfg.order[k]; if (linked[s] && n < XI_MAX) want[n++] = s; }
+  if (reorder) {                         // `order` command or boot: sort linked slots by cfg.order
+    int n = 0;
+    for (int k = 0; k < NSLOT; k++) { int s = cfg.order[k]; if (linked[s] && n < XI_MAX) want[n++] = s; }
+  } else {                               // sticky: a linked controller keeps its interface (no reshuffle)
+    for (int x = 0; x < XI_MAX; x++) { int s = slot_on_itf[x]; if (s >= 0 && linked[s]) want[x] = s; }
+    for (int k = 0; k < NSLOT; k++) {    // newcomers, in cfg.order, take the lowest free interface
+      int s = cfg.order[k];
+      if (!linked[s] || itf_of[s] >= 0) continue;
+      for (int x = 0; x < XI_MAX; x++) if (want[x] < 0) { want[x] = s; break; }
+    }
+  }
   for (int i = 0; i < NSLOT; i++) itf_of[i] = -1;
   for (int x = 0; x < XI_MAX; x++) {
     if (want[x] != slot_on_itf[x]) itf_neutral_due[x] = true;
@@ -804,15 +813,17 @@ void loop() {
   for (int i = 0; i < NSLOT; i++) {
     int x = itf_of[i];
     if (!slot[i].fresh) continue;
-    bool usb_ok = x >= 0 && xinput_ready(x);
+    wd_stage = 10; bool usb_ok = x >= 0 && xinput_ready(x);
     bool want_input = watch_level >= 2 && millis() - last_input_ms[i] >= 20;
     // Keep the report for USB if the interface is busy, unless the console wants it (it doesn't wait on USB).
     if (!usb_ok && !want_input && x >= 0) continue;
     uint8_t r[32], o[20];
-    NVIC_DisableIRQ(RADIO_IRQn); memcpy(r, slot[i].report, 32); slot[i].fresh = false; NVIC_EnableIRQ(RADIO_IRQn);
+    wd_stage = 11;     NVIC_DisableIRQ(RADIO_IRQn); memcpy(r, slot[i].report, 32); slot[i].fresh = false; NVIC_EnableIRQ(RADIO_IRQn);
     build_xinput(r, o);
-    if (usb_ok && xinput_send(x, o, 20)) { n_usb[i]++; itf_neutral_due[x] = false; }
+    wd_stage = 12;     if (usb_ok && xinput_send(x, o, 20)) { n_usb[i]++; itf_neutral_due[x] = false; }
+    wd_stage = 13;
     if (want_input) { last_input_ms[i] = millis(); print_input(i, o); }
+    wd_stage = 14;
     if (verbose_slot == i) {
       char line[80]; int n = snprintf(line, sizeof line, "R%d ", i + 1);
       for (int k = 0; k < 32; k++) n += snprintf(line + n, sizeof line - n, "%02x", r[k]);
@@ -823,6 +834,7 @@ void loop() {
   wd_stage = 8;
   for (int i = 0; i < NSLOT; i++) {
     if (!slot[i].other_fresh) continue;
+    wd_stage = 14;
     if (verbose_slot == i) {
       uint8_t len = slot[i].other[0] & 0x3f; if (len > 32) len = 32;
       char line[90]; int n = snprintf(line, sizeof line, "O%d len=%u s1=%u ", i + 1, len, slot[i].other[1]);

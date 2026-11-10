@@ -75,9 +75,11 @@ Files:
 
 - Each slot is "linked" once reports arrive, and unlinked after 3 s without reports, so a short dropout
   doesn't reshuffle players.
-- Linked slots take the Xbox interfaces in player order: with both linked, the first in the order
-  (default Blue) is player 1. A controller on its own is always player 1 (the user's choice, 2026-11-10).
-  When the second controller arrives, the first may move from player 1 to player 2.
+- **Sticky players (fw 0.2.2, the user's choice):** a linked controller keeps its Xbox interface. A newcomer
+  takes the lowest free one, so the first controller on is player 1 and the next is player 2, and nobody moves
+  when the other joins or leaves. (Before, the first controller jumped from player 1 to 2 when Blue arrived,
+  which Windows saw as a disconnect.) The player order (default Blue first) only breaks ties when both link at
+  once (boot) and is applied in full when it's changed with `order`.
 - An interface whose controller is gone, or silent for 150 ms, gets one neutral report so no button
   stays held.
 - On Windows both Xbox interfaces always exist, so an unused one still looks like a connected pad.
@@ -121,7 +123,8 @@ Other replies: `{"type":"ok","cmd":…}`, `{"type":"error","msg":…}`.
   writes the loop stage and whether the radio interrupt was running to `GPREGRET2`, then resets. A HardFault does
   the same. Not the hardware WDT: that keeps running in the bootloader and could cut a flash short.
   Stages: 1 learn, 2 hunting, 3 console input, 4 players, 5 telemetry/channel moves, 6 USB reports,
-  7 neutral reports, 8 debug output, 9 status output.
+  7 neutral reports, 8 debug output, 9 status output; inside 6: 10 `xinput_ready`, 11 copy, 12 `xinput_send`,
+  13 console input line, 14 verbose.
 
 ### Learn mode
 

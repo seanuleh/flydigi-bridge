@@ -26,7 +26,8 @@ Last updated 2026-11-10.
 
 - **Slots in flash, learn mode, web page (2026-11-10, tested on macOS only):**
   - controller addresses, names and player order are stored in flash; the old hardcoded pair is the default;
-  - player rule: with both on, Blue is player 1; a controller on its own is player 1;
+  - player rule (fw 0.2.2): sticky. First controller on is player 1, a connected controller never changes
+    player; the saved order (Blue first) applies when both start together or when changed on the page;
   - learn mode re-learned blue in about 1 s;
   - `web/index.html` (Web Serial): slot cards with live input, signal and loss, rename, forget, learn,
     player choice. Used against the real bridge on the Mac (2026-11-10).
@@ -68,8 +69,13 @@ Last updated 2026-11-10.
   (fw 0.2.1): −60 to −75 dBm (was −83 to −85), 90–100 reports a second, linked the whole time apart from
   about 15 s of automatic channel moves (was about 12 of 60 s linked). Channels 5–8 are noisy (dips to 56
   reports a second during CRC-error bursts); channel 68 was clean: −60 dBm, 99–100 a second, no bad packets.
-  The limit is now interference, not range. Not yet measured with both controllers. Open question: on channel
-  41 Blue resent every report (`dup` about 88 a second), so it wasn't hearing our acks there.
+  The limit is now interference, not range. Both controllers, channel 68: 98–100 reports a second each at
+  −60 to −71 dBm, almost no bad packets. Open question: on channel 41 Blue resent every report (`dup` about
+  88 a second), so it wasn't hearing our acks there.
+- **Watchdog caught a real hang (2026-11-10, fw 0.2.1):** `boot` read `watchdog stage=6` (the USB report
+  sending part of `loop()`) after a two-controller session; the board restarted by itself and both pads came
+  back. Suspect: TinyUSB's endpoint claim waits on a mutex forever. 0.2.2 splits stage 6 into 10 (`xinput_ready`),
+  11 (copy), 12 (`xinput_send`), 13 (console input line), 14 (verbose), so the next `boot` says which.
 - **Verdict on range:** even side by side at the couch the controllers read −73 to −81 dBm. The board is a
   Pro Micro nRF52840 clone with a "C3" chip antenna; the receive side is the limit. Next: the antenna mod,
   else a board with a proper external antenna (e.g. a HolyIoT nRF52840 module).
