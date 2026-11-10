@@ -59,6 +59,17 @@ Last updated 2026-11-10.
 4. Open `web/index.html` in Chrome or Edge (serve it from localhost, or publish it over https), connect,
    and try rename, learn and the player choice.
 
-## Then
+## Then: full pairing, to go past two controllers
 
-Learn mode, the web UI and full pairing: see [learn-and-pairing-plan.md](learn-and-pairing-plan.md) §8.
+Today the bridge holds **two controllers at most**. Learned controllers keep their dongle-given addresses,
+and the radio only fits two unrelated addresses (pipes 0 and 1). With full pairing the bridge picks the
+addresses itself (one shared base, distinct prefixes), so up to 7 fit on pipes 1–7.
+
+1. Research session with the user and an official dongle: capture a real pairing (plan §5 phase A).
+   Needs the controller's pairing button combo.
+2. Decode and replay it from test firmware (§5 phase B).
+3. Build `pair <slot>` into the bridge and the web page (§5 phase C).
+4. Raise the slot count: `NSLOT` / `XI_MAX` (2 today), more Xbox interfaces, player rule for more than two
+   pads, a wider slot table in flash (bump the config version).
+
+Details: [learn-and-pairing-plan.md](learn-and-pairing-plan.md) §5, §6, §8.

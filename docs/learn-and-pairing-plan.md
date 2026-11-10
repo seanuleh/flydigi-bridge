@@ -317,6 +317,7 @@ If a board with a button turns up later, add these (no other changes needed):
 ## 9. Open questions for you
 
 1. What's the button combo for pairing a Vader 4 Pro with its dongle? (Needed for §5 phase A.)
-2. How many controllers do you ever expect at once: 2, or up to 4 for guests? This decides how much
+2. ~~How many controllers?~~ Answered 2026-11-10: the user wants more than two on one bridge, so full
+   pairing is on the to-do list (status.md, "Then"). Original question: how many controllers do you ever expect at once: 2, or up to 4 for guests? This decides how much
    pairing matters compared to learn mode.
 3. Any preference for player-number assignment, such as red always player 1?
