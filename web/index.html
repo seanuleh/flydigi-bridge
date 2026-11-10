@@ -124,7 +124,7 @@ const BUTTONS = [ // XInput button bits, in the order shown
 ];
 const COLORS = { red: "var(--red)", blue: "var(--blue)" };
 
-let port = null, writer = null, reader = null, status = null;
+let port = null, writer = null, reader = null, status = null, bootSeen = null;
 const inputs = {}, cards = {};
 
 function log(msg) {
@@ -156,7 +156,7 @@ async function open() {
   $("connectBtn").textContent = "Disconnect";
   $("intro").hidden = true;
   setEnabled(true);
-  await send("watch 2");
+  await send(document.hidden ? "watch 0" : "watch 2");
   readLoop();
 }
 
@@ -351,6 +351,10 @@ const LINK_TEXT = { up: "Connected", lost: "Signal lost", down: "Off", empty: "E
 
 function onStatus(m) {
   status = m;
+  if (m.boot && m.boot !== bootSeen) {
+    bootSeen = m.boot;
+    if (/watchdog|hardfault|lockup/.test(m.boot)) log(`The bridge restarted itself after a hang (${m.boot}, ${m.up} s ago).`);
+  }
   $("ch").textContent = m.ch;
   $("hunt").textContent = m.hunt ? "yes, looking for controllers" : "no";
   $("bad").textContent = m.bad + " / s";
@@ -412,6 +416,10 @@ $("connectBtn").onclick = connect;
 if (!("serial" in navigator)) { $("noSerial").hidden = false; $("connectBtn").disabled = true; }
 else {
   navigator.serial.addEventListener("disconnect", (e) => { if (e.target === port) { log("Bridge unplugged."); onClosed(); } });
+  // A hidden tab can be frozen by Chrome with the port still open: stream only while the page is visible,
+  // and close the port when the page goes away.
+  document.addEventListener("visibilitychange", () => { if (writer) send(document.hidden ? "watch 0" : "watch 2").catch(() => {}); });
+  window.addEventListener("pagehide", () => { if (port) disconnect(); });
   // Reconnect without the picker if this page was allowed before.
   navigator.serial.getPorts().then((ps) => {
     const p = ps.find((p) => p.getInfo().usbVendorId === 0x1209) || ps[0];

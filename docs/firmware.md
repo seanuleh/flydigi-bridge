@@ -95,7 +95,7 @@ to the debug commands below.
 
 | Command | Effect |
 |---|---|
-| `status` | `{"type":"status","fw","ch","hunt","bad","order":[p1,p2],"slots":[{slot,name,addr,kind,link,player,rate,dup,rssi,usb}]}`; `link` is `up`, `lost` (silent but still holding its player), `down` or `empty` |
+| `status` | `{"type":"status","fw","ch","hunt","bad","order":[p1,p2],"boot","up","rtmo","drops","slots":[{slot,name,addr,kind,link,player,rate,dup,rssi,usb}]}`; `link` is `up`, `lost` (silent but still holding its player), `down` or `empty`. `boot` = why it last started (`watchdog stage=N [radio-isr]`, `hardfault stage=N`, `power on`, `soft reset`, …), `up` = seconds since, `rtmo` = radio wait timeouts, `drops` = console writes dropped because the PC wasn't reading |
 | `watch <0\|1\|2>` | 0 = off (the old `# stat` line every 2 s comes back); 1 = status every 200 ms; 2 = status plus `{"type":"input",slot,btn,lt,rt,lx,ly,rx,ry}` every 20 ms per slot (XInput values) |
 | `name <slot> <text>` | Rename (15 chars max), saved |
 | `forget <slot>` | Empty the slot, saved |
@@ -106,8 +106,22 @@ to the debug commands below.
 | `cancel` | Leave learn mode, slot unchanged |
 | `defaults` | Back to Red + Blue, saved |
 | `version`, `reboot`, `bootloader` | `bootloader` enters the UF2 drive |
+| `hang` | Test: blocks the main loop for 5 s so the watchdog restarts the board (`boot` then says `watchdog stage=3`) |
 
 Other replies: `{"type":"ok","cmd":…}`, `{"type":"error","msg":…}`.
+
+### Hang protection (fw 0.2.1)
+
+- **Console never blocks.** Arduino's `Serial.write` waits as long as the PC holds the port open (DTR) without
+  reading, which stopped `loop()` and every pad (e.g. a frozen browser tab with the web page). All output goes
+  through `con`: a write waits at most 20 ms for room, then whole lines are dropped (`drops`) until the PC reads
+  again. Tested: port held open unread for 20 s, 333 lines dropped, no restart.
+- **Radio waits are bounded** (500 µs). On a timeout the radio is power-cycled and set up again (`rtmo`).
+- **Software watchdog:** TIMER4 at interrupt priority 0 (the radio is at 1). If `loop()` doesn't run for 2 s, it
+  writes the loop stage and whether the radio interrupt was running to `GPREGRET2`, then resets. A HardFault does
+  the same. Not the hardware WDT: that keeps running in the bootloader and could cut a flash short.
+  Stages: 1 learn, 2 hunting, 3 console input, 4 players, 5 telemetry/channel moves, 6 USB reports,
+  7 neutral reports, 8 debug output, 9 status output.
 
 ### Learn mode
 

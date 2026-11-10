@@ -19,9 +19,82 @@
 #endif
 // Bump when the MS OS descriptors change: Windows caches them per VID/PID/bcdDevice.
 #define USB_BCD_DEVICE 0x0101
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.2.1"
 #include "xinput.h"
 #include "store.h"
+
+// Console output that never blocks. Serial.write waits for as long as the PC holds the port open (DTR) but
+// doesn't read: a frozen or throttled browser tab with the web page then stopped loop() and every pad with it.
+// Here a write waits at most CON_WAIT_MS for room, then the console counts as stalled and output is dropped
+// (whole lines) until the PC reads again.
+#define CON_WAIT_MS 20
+static uint32_t con_drops = 0;
+class Con : public Print {
+  bool stalled = false, skip_line = false;
+ public:
+  size_t write(uint8_t b) override { return write(&b, 1); }
+  size_t write(const uint8_t *b, size_t n) override {
+    if (!Serial) { skip_line = false; return n; }          // nobody listening: drop silently
+    bool eol = n && b[n - 1] == '\n';
+    if (stalled && Serial.availableForWrite() >= 192) stalled = false;
+    if (skip_line || stalled) { if (eol) skip_line = false; con_drops++; return n; }
+    size_t done = 0;
+    uint32_t t0 = millis();
+    while (done < n) {
+      int room = Serial.availableForWrite();
+      if (room > 0) { size_t k = min((size_t)room, n - done); done += Serial.write(b + done, k); continue; }
+      if (millis() - t0 >= CON_WAIT_MS) { stalled = true; skip_line = !eol; con_drops++; break; }
+      yield();
+    }
+    return n;
+  }
+};
+static Con con;
+
+// Software watchdog. TIMER4 ticks every 100 ms at the top interrupt priority (above the radio's), and loop()
+// clears the count. Two seconds without loop() means the board is stuck: note where in GPREGRET2 (kept over a
+// soft reset) and reset, so the pads come back by themselves. `status` reports the note after the restart.
+// GPREGRET2: bit 7 = watchdog, bit 6 = HardFault, bit 5 = inside the radio interrupt, bits 0-4 = loop stage.
+#define WD_TICKS 20
+static volatile uint8_t wd_ticks = 0, wd_stage = 0;
+static uint8_t boot_note = 0; static uint32_t boot_resetreas = 0;
+static volatile bool in_radio_isr = false;   // for the watchdog note
+extern "C" void TIMER4_IRQHandler() {
+  NRF_TIMER4->EVENTS_COMPARE[0] = 0;
+  if (++wd_ticks >= WD_TICKS) {
+    NRF_POWER->GPREGRET2 = 0x80 | (in_radio_isr ? 0x20 : 0) | (wd_stage & 0x1F);
+    NVIC_SystemReset();
+  }
+}
+extern "C" void HardFault_Handler() {
+  NRF_POWER->GPREGRET2 = 0x40 | (wd_stage & 0x1F);
+  NVIC_SystemReset();
+}
+static void watchdog_start() {
+  boot_note = NRF_POWER->GPREGRET2; NRF_POWER->GPREGRET2 = 0;
+  boot_resetreas = NRF_POWER->RESETREAS; NRF_POWER->RESETREAS = 0xFFFFFFFF;
+  NRF_TIMER4->TASKS_STOP = 1; NRF_TIMER4->TASKS_CLEAR = 1;
+  NRF_TIMER4->MODE = TIMER_MODE_MODE_Timer; NRF_TIMER4->BITMODE = TIMER_BITMODE_BITMODE_32Bit;
+  NRF_TIMER4->PRESCALER = 4;                       // 1 MHz
+  NRF_TIMER4->CC[0] = 100000;                      // 100 ms
+  NRF_TIMER4->SHORTS = TIMER_SHORTS_COMPARE0_CLEAR_Msk;
+  NRF_TIMER4->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
+  NVIC_SetPriority(TIMER4_IRQn, 0);
+  NVIC_ClearPendingIRQ(TIMER4_IRQn);
+  NVIC_EnableIRQ(TIMER4_IRQn);
+  NRF_TIMER4->TASKS_START = 1;
+}
+static const char *boot_text(char *buf) {          // for status: why the board last started
+  if (boot_note & 0x80) sprintf(buf, "watchdog stage=%u%s", boot_note & 0x1F, boot_note & 0x20 ? " radio-isr" : "");
+  else if (boot_note & 0x40) sprintf(buf, "hardfault stage=%u", boot_note & 0x1F);
+  else if (boot_resetreas & POWER_RESETREAS_RESETPIN_Msk) strcpy(buf, "reset pin");
+  else if (boot_resetreas & POWER_RESETREAS_SREQ_Msk) strcpy(buf, "soft reset");
+  else if (boot_resetreas & POWER_RESETREAS_LOCKUP_Msk) strcpy(buf, "lockup");
+  else if (boot_resetreas & POWER_RESETREAS_DOG_Msk) strcpy(buf, "hw watchdog");
+  else if (boot_resetreas) sprintf(buf, "resetreas=0x%lx", boot_resetreas);
+  else strcpy(buf, "power on");
+  return buf;
+}
 
 // Slot n listens on radio pipe n (pipe 0 = BASE0, pipe 1 = BASE1, each with its own prefix byte).
 static uint8_t channel = 12;
@@ -85,10 +158,21 @@ static inline void ack_arm(bool on) {           // arm/disarm the END->TXEN path
 static const uint32_t SH_TX = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk |
                               RADIO_SHORTS_DISABLED_RXEN_Msk;
 
+// Waits for RADIO DISABLED, at most 500 us. These waits used to be unbounded, one of them inside the radio
+// interrupt: a missed event would freeze the whole board (suspected cause of a couch freeze, 2026-11-10).
+static volatile uint32_t n_rtmo = 0;          // radio wait timeouts (reported in status)
+static volatile bool radio_reinit_due = false;
+static bool wait_disabled() {
+  uint32_t t = DWT->CYCCNT;
+  while (!NRF_RADIO->EVENTS_DISABLED)
+    if (DWT->CYCCNT - t > 64 * 500) { n_rtmo++; return false; }
+  return true;
+}
+static void radio_reset() { NRF_RADIO->POWER = 0; NRF_RADIO->POWER = 1; }   // back to DISABLED, all registers default
 static void radio_off() {
   NRF_RADIO->SHORTS = 0; NRF_RADIO->INTENCLR = 0xFFFFFFFF;
   NRF_RADIO->EVENTS_DISABLED = 0; NRF_RADIO->TASKS_DISABLE = 1;
-  while (!NRF_RADIO->EVENTS_DISABLED);
+  if (!wait_disabled()) radio_reset();
   NRF_RADIO->EVENTS_DISABLED = 0;
 }
 static void start_rx() {
@@ -117,7 +201,7 @@ static void radio_init() {
   NRF_RADIO->CRCINIT = 0xFFFF; NRF_RADIO->CRCPOLY = 0x11021;
   NRF_RADIO->INTENSET = RADIO_INTENSET_DISABLED_Msk;
   ack_timer_init();
-  NVIC_SetPriority(RADIO_IRQn, 0);
+  NVIC_SetPriority(RADIO_IRQn, 1);                      // 0 is the watchdog timer's, so it can see a stuck radio ISR
   NVIC_ClearPendingIRQ(RADIO_IRQn);
   NVIC_EnableIRQ(RADIO_IRQn);
   start_rx();
@@ -129,13 +213,15 @@ static void abort_tx_and_rx() {
   if (NRF_RADIO->STATE != RADIO_STATE_STATE_Disabled) {
     NRF_RADIO->EVENTS_DISABLED = 0;
     NRF_RADIO->TASKS_DISABLE = 1;
-    while (!NRF_RADIO->EVENTS_DISABLED);
+    if (!wait_disabled()) { radio_reset(); radio_reinit_due = true; return; }   // loop() sets it up again
   }
   NRF_RADIO->EVENTS_DISABLED = 0;
   start_rx();
 }
 
-extern "C" void RADIO_IRQHandler() {
+static void radio_isr();
+extern "C" void RADIO_IRQHandler() { in_radio_isr = true; radio_isr(); in_radio_isr = false; }
+static void radio_isr() {
   if (!NRF_RADIO->EVENTS_DISABLED) return;
   NRF_RADIO->EVENTS_DISABLED = 0;
   if (in_tx) {                         // ack sent; DISABLED_RXEN short is ramping RX
@@ -304,28 +390,31 @@ static bool parse_addr(const char *h, uint8_t *a) {
 }
 
 static void print_status() {
-  Serial.printf("{\"type\":\"status\",\"fw\":\"" FW_VERSION "\",\"ch\":%u,\"hunt\":%s,\"bad\":%u,\"order\":[%u,%u],\"slots\":[",
-                channel, hunting() ? "true" : "false", bad_rate, cfg.order[0], cfg.order[1]);
+  char bt[40];
+  con.printf("{\"type\":\"status\",\"fw\":\"" FW_VERSION "\",\"ch\":%u,\"hunt\":%s,\"bad\":%u,\"order\":[%u,%u],"
+             "\"boot\":\"%s\",\"up\":%lu,\"rtmo\":%lu,\"drops\":%lu,\"slots\":[",
+             channel, hunting() ? "true" : "false", bad_rate, cfg.order[0], cfg.order[1],
+             boot_text(bt), millis() / 1000, n_rtmo, con_drops);
   for (int i = 0; i < NSLOT; i++) {
     const SlotCfg &c = cfg.slot[i];
     char a[11] = "";
     if (c.used) addr_hex(c.addr, a);
     const char *link = !c.used ? "empty" : slot_up(i) ? "up" : linked[i] ? "lost" : "down";
-    Serial.printf("%s{\"slot\":%d,\"name\":\"%s\",\"addr\":\"%s\",\"kind\":%u,\"link\":\"%s\",\"player\":%d,"
+    con.printf("%s{\"slot\":%d,\"name\":\"%s\",\"addr\":\"%s\",\"kind\":%u,\"link\":\"%s\",\"player\":%d,"
                   "\"rate\":%u,\"dup\":%u,\"rssi\":%d,\"usb\":%lu}",
                   i ? "," : "", i, c.used ? c.name : "", a, c.kind, link, itf_of[i] + 1, tele[i].rate, tele[i].dup,
                   slot_up(i) ? slot[i].rssi_x16 / 16 : 0, n_usb[i]);
   }
-  Serial.println("]}");
+  con.println("]}");
 }
 static void print_input(int i, const uint8_t *o) {
   int16_t lx, ly, rx, ry;
   memcpy(&lx, o + 6, 2); memcpy(&ly, o + 8, 2); memcpy(&rx, o + 10, 2); memcpy(&ry, o + 12, 2);
-  Serial.printf("{\"type\":\"input\",\"slot\":%d,\"btn\":%u,\"lt\":%u,\"rt\":%u,\"lx\":%d,\"ly\":%d,\"rx\":%d,\"ry\":%d}\n",
+  con.printf("{\"type\":\"input\",\"slot\":%d,\"btn\":%u,\"lt\":%u,\"rt\":%u,\"lx\":%d,\"ly\":%d,\"rx\":%d,\"ry\":%d}\n",
                 i, o[2] | (o[3] << 8), o[4], o[5], lx, ly, rx, ry);
 }
-static void reply_ok(const char *c) { Serial.printf("{\"type\":\"ok\",\"cmd\":\"%s\"}\n", c); }
-static void reply_err(const char *msg) { Serial.printf("{\"type\":\"error\",\"msg\":\"%s\"}\n", msg); }
+static void reply_ok(const char *c) { con.printf("{\"type\":\"ok\",\"cmd\":\"%s\"}\n", c); }
+static void reply_err(const char *msg) { con.printf("{\"type\":\"error\",\"msg\":\"%s\"}\n", msg); }
 
 static void save_cfg() {                 // flash write stalls the CPU: take the radio down around it
   NVIC_DisableIRQ(RADIO_IRQn);
@@ -410,16 +499,16 @@ static void learn_radio_init() {
   learn_radio_rx();
 }
 static void learn_msg(const char *state) {
-  Serial.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"ch\":%u,\"left\":%ld,\"candidates\":[",
+  con.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"ch\":%u,\"left\":%ld,\"candidates\":[",
                 state, learn_slot, channel, (long)((int32_t)(learn_deadline - millis()) / 1000));
   for (int i = 0; i < ncand; i++) {
     char a[11]; addr_hex(cand[i].addr, a);
-    Serial.printf("%s{\"addr\":\"%s\",\"hits\":%u,\"ch\":%u,\"rssi\":%d}", i ? "," : "", a, cand[i].hits, cand[i].ch, cand[i].rssi);
+    con.printf("%s{\"addr\":\"%s\",\"hits\":%u,\"ch\":%u,\"rssi\":%d}", i ? "," : "", a, cand[i].hits, cand[i].ch, cand[i].rssi);
   }
-  Serial.println("]}");
+  con.println("]}");
 }
 static void learn_end(const char *state, const char *reason) {
-  Serial.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"reason\":\"%s\"}\n", state, learn_slot, reason);
+  con.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"reason\":\"%s\"}\n", state, learn_slot, reason);
   learn_state = L_OFF;
 }
 static bool learn_start(int s, int timeout_s) {
@@ -458,7 +547,7 @@ static void learn_step() {
     if (slot[learn_slot].n_new >= 20) {  // steady reports: keep it
       save_cfg();
       char a[11]; addr_hex(cfg.slot[learn_slot].addr, a);
-      Serial.printf("{\"type\":\"learn\",\"state\":\"done\",\"slot\":%u,\"addr\":\"%s\"}\n", learn_slot, a);
+      con.printf("{\"type\":\"learn\",\"state\":\"done\",\"slot\":%u,\"addr\":\"%s\"}\n", learn_slot, a);
       learn_state = L_OFF;
     } else if (now - learn_confirm_ms > LEARN_CONFIRM_MS) {
       cfg.slot[learn_slot] = learn_prev;
@@ -503,9 +592,8 @@ static void learn_step() {
     learn_hop_ms = now;
     channel = (channel >= 80) ? 2 : channel + 1;
     NRF_RADIO->SHORTS = 0; NRF_RADIO->EVENTS_DISABLED = 0; NRF_RADIO->TASKS_DISABLE = 1;
-    while (!NRF_RADIO->EVENTS_DISABLED);
-    NRF_RADIO->FREQUENCY = channel;
-    learn_radio_rx();
+    if (!wait_disabled()) { radio_reset(); learn_radio_init(); }
+    else { NRF_RADIO->FREQUENCY = channel; learn_radio_rx(); }
   }
   if (now - learn_msg_ms >= 500) { learn_msg_ms = now; learn_msg("listening"); }
 }
@@ -548,11 +636,11 @@ static void channel_monitor() {
   for (int c = 2; c <= 80; c++)
     if (c != channel && cq_score[c] && !cq_cooling(c) && (!next || cq_score[c] > cq_score[next])) next = c;
   if (next) {
-    Serial.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, moving to %u\"}\n", channel, avg, next);
+    con.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, moving to %u\"}\n", channel, avg, next);
     channel = next;
     cq_moved_ms = now;                  // hunting waits CQ_GRACE_MS for the controllers to follow
   } else {
-    Serial.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, searching for a better one\"}\n", channel, avg);
+    con.printf("{\"type\":\"log\",\"msg\":\"channel %u: %d reports/s, searching for a better one\"}\n", channel, avg);
     channel = (channel >= 80) ? 2 : channel + 1;
     cq_moved_ms = now - CQ_GRACE_MS;    // no grace: hunt straight away
   }
@@ -627,17 +715,18 @@ static bool handle_word(char *line) {
   if (!strcmp(w, "defaults")) { store_defaults(); for (int i = 0; i < NSLOT; i++) clear_slot_state(i); save_cfg(); reply_ok(w); return true; }
   if (!strcmp(w, "reboot")) { reply_ok(w); Serial.flush(); delay(50); NVIC_SystemReset(); }
   if (!strcmp(w, "bootloader")) { reply_ok(w); Serial.flush(); delay(50); enterUf2Dfu(); }
-  if (!strcmp(w, "version")) { Serial.println("{\"type\":\"version\",\"fw\":\"" FW_VERSION "\"}"); return true; }
+  if (!strcmp(w, "hang")) { reply_ok(w); uint32_t t = millis(); while (millis() - t < 5000); return true; }   // watchdog test
+  if (!strcmp(w, "version")) { con.println("{\"type\":\"version\",\"fw\":\"" FW_VERSION "\"}"); return true; }
   return false;
 }
 
 static void print_stats() {
-  Serial.printf("# stat ch=%u bad=%lu turn=%luus", channel, n_bad, turn_n ? turn_sum / turn_n : 0);
+  con.printf("# stat ch=%u bad=%lu turn=%luus", channel, n_bad, turn_n ? turn_sum / turn_n : 0);
   turn_sum = turn_n = 0;
   for (int i = 0; i < NSLOT; i++)
-    Serial.printf(" | c%d %s P%d rep=%lu dup=%lu oth=%lu usb=%lu rssi=%d", i + 1, slot_up(i) ? "UP" : "down", itf_of[i] + 1,
+    con.printf(" | c%d %s P%d rep=%lu dup=%lu oth=%lu usb=%lu rssi=%d", i + 1, slot_up(i) ? "UP" : "down", itf_of[i] + 1,
                   slot[i].n_report, slot[i].n_dup, slot[i].n_other, n_usb[i], slot[i].rssi_x16 / 16);
-  Serial.println();
+  con.println();
 }
 static void handle(char *c) {
   char copy[sizeof cmd]; strcpy(copy, c);
@@ -653,7 +742,7 @@ static void handle(char *c) {
     case 'p': pipe_mask = strtoul(c + 1, 0, 10); radio_init(); break;
     default: reply_err("unknown command"); return;
   }
-  Serial.printf("# ok ch=%u verbose=%d other_mode=%u tx_delay=%lu scan=%d\n", channel, verbose_slot + 1, other_mode, tx_delay_us, scan_enabled);
+  con.printf("# ok ch=%u verbose=%d other_mode=%u tx_delay=%lu scan=%d\n", channel, verbose_slot + 1, other_mode, tx_delay_us, scan_enabled);
 }
 
 // ───────────────────────── main ─────────────────────────
@@ -676,6 +765,7 @@ void setup() {
   while (!NRF_CLOCK->EVENTS_HFCLKSTARTED);
   NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT = 0; DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  watchdog_start();
   radio_init();
 }
 
@@ -697,15 +787,20 @@ static void scan_step() {
 
 static uint32_t last_stat = 0;
 void loop() {
+  wd_ticks = 0;
+  if (radio_reinit_due && learn_state != L_SCAN) { radio_reinit_due = false; radio_init(); }
+  wd_stage = 1;
   learn_step();
-  if (learn_state != L_SCAN) scan_step();
+  wd_stage = 2; if (learn_state != L_SCAN) scan_step();
+  wd_stage = 3;
   while (Serial.available()) {
     char ch = Serial.read();
     if (ch == '\n' || ch == '\r') { if (cl) { cmd[cl] = 0; handle(cmd); cl = 0; } }
     else if (cl < (int)sizeof(cmd) - 1) cmd[cl++] = ch;
   }
-  update_players();
-  if (update_tele()) channel_monitor();
+  wd_stage = 4; update_players();
+  wd_stage = 5; if (update_tele()) channel_monitor();
+  wd_stage = 6;
   for (int i = 0; i < NSLOT; i++) {
     int x = itf_of[i];
     if (!slot[i].fresh) continue;
@@ -721,20 +816,22 @@ void loop() {
     if (verbose_slot == i) {
       char line[80]; int n = snprintf(line, sizeof line, "R%d ", i + 1);
       for (int k = 0; k < 32; k++) n += snprintf(line + n, sizeof line - n, "%02x", r[k]);
-      Serial.println(line);
+      con.println(line);
     }
   }
-  send_neutrals();
+  wd_stage = 7; send_neutrals();
+  wd_stage = 8;
   for (int i = 0; i < NSLOT; i++) {
     if (!slot[i].other_fresh) continue;
     if (verbose_slot == i) {
       uint8_t len = slot[i].other[0] & 0x3f; if (len > 32) len = 32;
       char line[90]; int n = snprintf(line, sizeof line, "O%d len=%u s1=%u ", i + 1, len, slot[i].other[1]);
       for (int k = 0; k < len; k++) n += snprintf(line + n, sizeof line - n, "%02x", slot[i].other[2 + k]);
-      Serial.println(line);
+      con.println(line);
     }
     slot[i].other_fresh = false;
   }
+  wd_stage = 9;
   if (watch_level && millis() - last_watch_status >= 200) { last_watch_status = millis(); print_status(); }
   if (legacy_stats && millis() - last_stat >= 2000) { last_stat = millis(); print_stats(); }
 }

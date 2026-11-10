@@ -55,6 +55,17 @@ Last updated 2026-11-10.
   timer, so a channel full of Wi-Fi/ESP-NOW noise (300–570 bad a second on channel 6) stopped the hunt for
   good and the controllers never connected. Only CRC-good packets count now. Checked on the HTPC: after a
   noise burst on 33 the bridge hunted on and found Blue on 68 (−77 dBm, 85–94 reports a second).
+- **Fixed: freezes with the web page connected (2026-11-10, fw 0.2.1).** After the antenna mod the bridge
+  stayed connected for a while, then froze again (COM3 open hung, pads dead, replug needed). Two firmware causes:
+  console writes blocked forever while the PC held the port open without reading (a frozen or throttled Chrome
+  tab with the page does this), and unbounded radio waits, one inside the top-priority radio interrupt. Which
+  one hit isn't known (nothing survives a freeze). Now: non-blocking console, bounded radio waits, and a software
+  watchdog that restarts the board and says why in `status` (`boot`); see firmware.md, "Hang protection". The
+  web page now streams only while its tab is visible and closes the port when the page goes away. Tested on the
+  HTPC: `hang` restarts it by itself; port held open unread for 20 s, no freeze. If `boot` ever says `watchdog`,
+  the stage number says where it was stuck.
+- **Antenna mod done (user, 2026-11-10), not measured yet.** No signal reading since the mod (the controllers
+  were off when checked). Compare with the couch baseline above.
 - **Verdict on range:** even side by side at the couch the controllers read −73 to −81 dBm. The board is a
   Pro Micro nRF52840 clone with a "C3" chip antenna; the receive side is the limit. Next: the antenna mod,
   else a board with a proper external antenna (e.g. a HolyIoT nRF52840 module).
