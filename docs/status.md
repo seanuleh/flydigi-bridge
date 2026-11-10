@@ -51,6 +51,13 @@ Last updated 2026-11-10.
   automatic moves cooled all of 2–80 within a few minutes. `scan_step` then looped forever, USB froze, and
   only a replug recovered it (a PC restart doesn't cut USB power). The loop is now bounded and clears the
   cooldowns. Flashed on the HTPC; not yet seen under the condition that triggered it.
+- **Fixed: hunting parked on noisy channels (2026-11-10).** CRC-bad packets refreshed the "heard something"
+  timer, so a channel full of Wi-Fi/ESP-NOW noise (300–570 bad a second on channel 6) stopped the hunt for
+  good and the controllers never connected. Only CRC-good packets count now. Checked on the HTPC: after a
+  noise burst on 33 the bridge hunted on and found Blue on 68 (−77 dBm, 85–94 reports a second).
+- **Verdict on range:** even side by side at the couch the controllers read −73 to −81 dBm. The board is a
+  Pro Micro nRF52840 clone with a "C3" chip antenna; the receive side is the limit. Next: the antenna mod,
+  else a board with a proper external antenna (e.g. a HolyIoT nRF52840 module).
 
 ## Known issues and limits
 

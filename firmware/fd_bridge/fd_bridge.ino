@@ -152,8 +152,8 @@ extern "C" void RADIO_IRQHandler() {
   NRF_TIMER3->EVENTS_COMPARE[0] = 0;
   // RX done; DISABLED_TXEN short already started the TX ramp-up (~130 us)
   uint32_t pipe = NRF_RADIO->RXMATCH;
-  any_rx_ms = millis();
   if (NRF_RADIO->CRCSTATUS != 1 || pipe >= NSLOT) { n_bad++; abort_tx_and_rx(); return; }
+  any_rx_ms = millis();                // CRC-good only: noise (Wi-Fi, ESP-NOW) used to park hunting on a busy channel
   NRF_RADIO->TXADDRESS = pipe;         // reply on the controller's own address
   Slot &S = slot[pipe];
   uint8_t len = rx_buf[0] & 0x3f;
