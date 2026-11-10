@@ -64,8 +64,12 @@ Last updated 2026-11-10.
   web page now streams only while its tab is visible and closes the port when the page goes away. Tested on the
   HTPC: `hang` restarts it by itself; port held open unread for 20 s, no freeze. If `boot` ever says `watchdog`,
   the stage number says where it was stuck.
-- **Antenna mod done (user, 2026-11-10), not measured yet.** No signal reading since the mod (the controllers
-  were off when checked). Compare with the couch baseline above.
+- **Antenna mod works (user, 2026-11-10).** 31 mm wire across the chip antenna. Couch, Blue alone, 90 s
+  (fw 0.2.1): −60 to −75 dBm (was −83 to −85), 90–100 reports a second, linked the whole time apart from
+  about 15 s of automatic channel moves (was about 12 of 60 s linked). Channels 5–8 are noisy (dips to 56
+  reports a second during CRC-error bursts); channel 68 was clean: −60 dBm, 99–100 a second, no bad packets.
+  The limit is now interference, not range. Not yet measured with both controllers. Open question: on channel
+  41 Blue resent every report (`dup` about 88 a second), so it wasn't hearing our acks there.
 - **Verdict on range:** even side by side at the couch the controllers read −73 to −81 dBm. The board is a
   Pro Micro nRF52840 clone with a "C3" chip antenna; the receive side is the limit. Next: the antenna mod,
   else a board with a proper external antenna (e.g. a HolyIoT nRF52840 module).
