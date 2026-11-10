@@ -1,0 +1,13 @@
+# build outputs
+**/build/
+*.uf2
+*.hex
+*.zip
+tools/gc_dump
+
+# local / scratch
+.claude/
+captures/scratch/
+__pycache__/
+*.pyc
+.DS_Store
