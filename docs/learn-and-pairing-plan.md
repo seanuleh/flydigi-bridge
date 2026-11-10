@@ -1,7 +1,7 @@
 # Plan: Learn mode, full pairing, and the USB web interface
 
 Status: **§8 steps 2–4 done on 2026-11-10** (slot table, console protocol, telemetry, web page v1, learn mode;
-see firmware.md). Pairing (§5) not started. Written 2026-11-10. Prerequisite: the dual-controller Windows test
+see firmware.md; page hosted at https://seanuleh.github.io/flydigi-bridge/). Pairing (§5) not started. Written 2026-11-10. Prerequisite: the dual-controller Windows test
 (see "Order of work" at the bottom, and `docs/status.md`); its result decides which USB interface the web page uses.
 
 ## 1. Where we are

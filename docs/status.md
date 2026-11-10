@@ -29,8 +29,11 @@ Last updated 2026-11-10.
   - player rule: with both on, Blue is player 1; a controller on its own is player 1;
   - learn mode re-learned blue in about 1 s;
   - `web/index.html` (Web Serial): slot cards with live input, signal and loss, rename, forget, learn,
-    player choice. Renders in demo mode (`?demo`); **not yet used against the real bridge** (needs the
-    port picker click).
+    player choice. Used against the real bridge on the Mac (2026-11-10).
+  - Hosted at **https://seanuleh.github.io/flydigi-bridge/** (GitHub Pages, branch `gh-pages`, which holds only
+    `index.html`). To republish after changing `web/index.html`: commit to main, then push a new `gh-pages`
+    commit whose tree is just that file (`git hash-object -w` → `git mktree` → `git commit-tree -p origin/gh-pages`).
+- **TX power +8 dBm** (the maximum; only makes our acks louder, not our hearing).
 
 - **Automatic channel moves (2026-11-10, Mac):** heavy loss on one channel (about 35 of 100 reports, both
   controllers alike) turned out to be the channel itself, not hardware. The bridge now leaves a bad channel by
@@ -40,10 +43,11 @@ Last updated 2026-11-10.
 
 - macOS shows only the first of the two Xbox interfaces, and none at all in the default (Windows composite)
   USB mode. Build with `USB_XBOX_IDS=1` to get a pad on the Mac.
-- **No COM port on Windows.** Because VID/PID is 045E:028E, the Xbox composite driver claims the whole
-  device instead of `usbccgp`, so the CDC debug interface never enumerates. Web Serial is out on Windows
-  as things stand.
-- Rumble, the extra buttons and the polling rate are not supported (the downstream path is unknown).
+- **COM port on Windows: fix untested.** With 045E:028E the Xbox composite driver claims the whole device and
+  the CDC port never enumerates. The default build now uses 1209:0001 + MS OS 2.0 descriptors to fix that;
+  waiting on the HTPC test.
+- Rumble and the polling rate are not supported (the downstream path is unknown). The extra buttons and back
+  paddles arrive in the report but aren't mapped yet.
 - CRC-bad counter around 40 a second with both controllers active (collisions; retransmits hide them).
 - No hunting for a second controller while the first one is connected.
 - Weak links drop instead of riding out losses: a few lost reports in a row and the controller times
@@ -52,16 +56,37 @@ Last updated 2026-11-10.
   Probably a badly seated plug; not reproduced on the retry.
 - Not tested: a 30-minute-plus session, wake after hours of sleep (the user chose to skip these).
 
-## Next step: Windows test of the composite build
+## Next step: HTPC test (in progress, 2026-11-10)
 
-1. Flash `fd_bridge` (default build) on the HTPC: double-tap reset, copy the UF2 (firmware.md, "USB").
-2. Check Device Manager: two Xbox 360 controllers **and** a COM port, no warning icons.
+The board already runs the latest firmware (flashed from the Mac); just move it to the HTPC on the extension cable.
+
+1. Device Manager: two Xbox 360 controllers **and** a COM port, no warning icons.
    If the pads don't get a driver, check which IDs `C:\Windows\INF\xusb22.inf` lists
    (`findstr /i "USB\\" C:\Windows\INF\xusb22.inf`) and try `XUSB20`; otherwise fall back to WebUSB.
-3. Gamepad tester: both pads; player order Blue then Red; one controller alone is player 1;
-   turning a controller off releases its buttons (neutral report).
-4. Open `web/index.html` in Chrome or Edge (serve it from localhost, or publish it over https), connect,
-   and try rename, learn and the player choice.
+   Fallback build that worked on Windows: `USB_XBOX_IDS=1` (firmware.md, "USB").
+2. Gamepad tester: both pads; Blue is player 1; one controller alone is player 1; turning a controller off
+   releases its buttons.
+3. Open the hosted page in Edge, connect, and read **Signal** with the controllers at the couch. This is the
+   baseline for the antenna mod below.
+
+## To do (after the HTPC test)
+
+- **Antenna mod (user):** the board's chip antenna is a "C3" part, likely the same CrossAir CA-C03 as in
+  [this ESP32-C3 SuperMini mod](https://peterneufeld.wordpress.com/2025/03/04/esp32-c3-supermini-antenna-modification/):
+  31 mm of 1 mm wire soldered across the antenna, about 6–10 dB better receive there (receive measured only;
+  some readers report worse sending). Measure Signal and Retries on the page before and after. Unverified on
+  this board. Alternative: an nRF52840 board with an external antenna (plan §7).
+- **Investigate unlocking 1000 Hz polling.** Today the controllers send about 100 reports a second.
+  `A5 50 0A 01` was acked by the controller but changed nothing ([vendor-commands.md](vendor-commands.md),
+  "Polling rate"). Ideas: set 1000 Hz in Space Station with the official dongle and capture the radio rate and
+  traffic; check whether it needs the flash-save command or gyro off; find the downstream path (below), which
+  the bridge needs to send settings at all. Check the bridge copes: ack turnaround, two controllers on one
+  channel at 10× the airtime, USB IN at 1 ms.
+- **Map the back paddles and extra buttons:** label bytes 5, 6, 22 (protocol.md) with the user pressing each
+  one, then map them to Xbox buttons. About 2 minutes of the user's time.
+- **Rumble:** games' rumble already reaches the bridge (`xinput_rumble_*`); the radio path to the controller is
+  unknown. Capture it with the official dongle (same session as pairing).
+- **Optional remote access:** SSH on the HTPC would let Claude read the bridge's COM port from the Mac.
 
 ## Then: full pairing, to go past two controllers
 

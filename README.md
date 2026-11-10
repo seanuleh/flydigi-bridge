@@ -15,13 +15,17 @@ bridge never sleeps, hunts for controllers on every channel, and serves several 
 | Wireless protocol | ✅ Fully decoded. Plaintext Nordic ESB at 2 Mbps; reports, handshake and acks documented |
 | Dongle emulation | ✅ Controllers connect to the bridge without their official dongle |
 | Two controllers on one bridge | ✅ Both stream at the same time (radio pipes 0 and 1) |
-| USB output | ✅ Xbox 360 interface (`045e:028e`), works on macOS; **Windows untested** |
-| Channel hunting | ✅ Finds searching controllers on any channel |
-| Learn mode / pairing / web UI | 📝 Planned: [docs/learn-and-pairing-plan.md](docs/learn-and-pairing-plan.md) |
-| Rumble, extra buttons (paddles, C/Z), 1000 Hz | ❌ Not yet. The downstream (dongle → controller) command path is still undecoded |
+| USB output | ✅ Two Xbox 360 pads, tested on Windows 11 with `045e:028e`. Default build now uses `1209:0001` + MS OS 2.0 descriptors so Windows also gets the config COM port (**untested on Windows**) |
+| Channel hunting | ✅ Finds searching controllers on any channel, and moves off a channel with heavy loss (controllers follow) |
+| Learn mode, slots in flash | ✅ Adopts a controller's existing address in about a second |
+| Web config page | ✅ [seanuleh.github.io/flydigi-bridge](https://seanuleh.github.io/flydigi-bridge/) (Chrome/Edge, Web Serial): live input, signal, rename, learn, player order |
+| Full pairing (more than 2 controllers) | 📝 Planned: [docs/learn-and-pairing-plan.md](docs/learn-and-pairing-plan.md) |
+| Rumble, 1000 Hz | ❌ Not yet. The downstream (dongle → controller) command path is still undecoded |
+| Extra buttons (paddles, C/Z) | ❌ Received but not mapped yet |
 
-Controller addresses are currently **hardcoded** in `firmware/fd_bridge/fd_bridge.ino`. To find yours,
-turn the controller on without its dongle and run the sniffer (see [Finding a controller's address](#finding-a-controllers-address)).
+Controller addresses live in the board's flash. Add yours with **Learn** on the web page (unplug the
+controller's own dongle, then turn the controller on), or by hand with the `addr` console command. The
+sniffer route still works too (see [Finding a controller's address](#finding-a-controllers-address)).
 
 ## Hardware
 
@@ -33,7 +37,8 @@ turn the controller on without its dongle and run the sniffer (see [Finding a co
 
 ```
 firmware/
-  fd_bridge/      the bridge: dongle emulation for 2 controllers + USB Xbox 360 interfaces + debug serial
+  fd_bridge/      the bridge: dongle emulation for 2 controllers, slots in flash, learn mode,
+                  USB Xbox 360 interfaces + serial console
   fd_sniff/       sniffer: fixed-address or promiscuous ESB capture, controlled over serial
   fd_dongle/      single-controller dongle emulator (the first working prototype)
   legacy/         June 2026 sketches (promiscuous ESB / BLE scanners), kept for reference
@@ -45,6 +50,7 @@ tools/
   gc_dump.swift   print macOS GameController state (used to map buttons)
   correlate_capture.py / correlate.py   record radio + Xbox state together, map radio bits to buttons
   legacy/whad/    June 2026 scripts for WHAD/ButteRFly
+web/              index.html: Web Serial config page (published to GitHub Pages from branch gh-pages)
 docs/             status, protocol, firmware, tools, vendor commands, plans; CLAUDE.md indexes them
 captures/         key radio recordings backing the protocol docs (see captures/README.md)
 ```
