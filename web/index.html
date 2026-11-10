@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flydigi Bridge</title>
+<style>
+  :root {
+    --bg: #111317; --panel: #1a1d23; --line: #2a2e36; --text: #e6e8eb; --dim: #8b919c;
+    --up: #3ecf8e; --warn: #f0b429; --down: #6b7280; --bad: #ef5350; --accent: #7aa2f7;
+    --red: #e5534b; --blue: #4f8ff7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .state { color: var(--dim); }
+  header .spacer { flex: 1; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+  button { background: #262a33; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button.armed { background: var(--bad); color: #fff; border-color: var(--bad); }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select { background: #0f1115; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+  .slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 20px; }
+  .slot-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--dim); }
+  .slot-name { font-size: 17px; font-weight: 600; }
+  .player { margin-left: auto; font-weight: 700; font-size: 13px; padding: 2px 8px; border-radius: 4px; background: #262a33; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #262a33; color: var(--dim); }
+  .pill.up { color: var(--up); } .pill.lost { color: var(--warn); } .pill.down, .pill.empty { color: var(--down); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+  .metric { background: #14161b; border-radius: 6px; padding: 8px 10px; }
+  .metric .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .metric .v { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .metric .v small { font-size: 12px; color: var(--dim); }
+  .addr { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--dim); font-size: 12px; }
+  .pad { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; background: #14161b; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .pad.idle { opacity: .35; }
+  .stick { width: 64px; height: 64px; border-radius: 50%; border: 1px solid var(--line); position: relative; }
+  .stick .dot { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); left: 25px; top: 25px; }
+  .stick.click { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+  .mid { display: grid; gap: 8px; }
+  .trig { display: grid; grid-template-columns: 22px 1fr; gap: 6px; align-items: center; font-size: 11px; color: var(--dim); }
+  .bar { height: 6px; background: #262a33; border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); }
+  .btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  .b { font-size: 11px; min-width: 26px; text-align: center; padding: 2px 5px; border-radius: 4px; background: #262a33; color: var(--dim); }
+  .b.on { background: var(--accent); color: #0b0d10; font-weight: 700; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  .hint { color: var(--dim); font-size: 13px; }
+  .learnbox { background: #14161b; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .notice { background: #2a2416; border: 1px solid #4a3d1a; color: #f3d48a; padding: 12px 14px; border-radius: 8px; }
+  pre.log { margin: 0; max-height: 160px; overflow: auto; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: var(--dim); white-space: pre-wrap; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } .slots { grid-template-columns: 1fr; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flydigi Bridge</h1>
+  <span class="state" id="connState">Not connected</span>
+  <span class="spacer"></span>
+  <button class="primary" id="connectBtn">Select bridge</button>
+</header>
+
+<main>
+  <div class="notice" id="noSerial" hidden>
+    This browser can't talk to USB serial devices. Open this page in Chrome or Edge on a desktop.
+  </div>
+  <div class="panel" id="intro">
+    <h2>Connect</h2>
+    <p class="hint" style="margin:0">Click <b>Select bridge</b> and pick "Flydigi Bridge" in the list. Your controllers keep
+      working while this page is open.</p>
+  </div>
+
+  <section class="slots" id="slots"></section>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Players</h2>
+      <div class="row">
+        <span>When both controllers are on, player 1 is</span>
+        <select id="p1Select" disabled></select>
+      </div>
+      <p class="hint">A controller on its own is always player 1.</p>
+    </div>
+    <div class="panel">
+      <h2>Radio and firmware</h2>
+      <div class="kv">
+        <span>Channel</span><span id="ch">–</span>
+        <span>Searching</span><span id="hunt">–</span>
+        <span>CRC errors</span><span id="bad">–</span>
+        <span>Firmware</span><span id="fw">–</span>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button id="rebootBtn" disabled>Restart bridge</button>
+        <button id="bootBtn" disabled>Firmware update mode</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Log</h2>
+    <pre class="log" id="log"></pre>
+  </div>
+</main>
+
+<script>
+"use strict";
+// Talks to fd_bridge over its USB serial port (Web Serial). Protocol: docs/firmware.md, "Console".
+const $ = (id) => document.getElementById(id);
+const BUTTONS = [ // XInput button bits, in the order shown
+  [0x1000, "A"], [0x2000, "B"], [0x4000, "X"], [0x8000, "Y"], [0x0100, "LB"], [0x0200, "RB"],
+  [0x0020, "Back"], [0x0010, "Start"], [0x0001, "↑"], [0x0002, "↓"], [0x0004, "←"], [0x0008, "→"],
+];
+const COLORS = { red: "var(--red)", blue: "var(--blue)" };
+
+let port = null, writer = null, reader = null, status = null;
+const inputs = {}, cards = {};
+
+function log(msg) {
+  const el = $("log");
+  el.textContent += msg + "\n";
+  if (el.textContent.length > 20000) el.textContent = el.textContent.slice(-15000);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function send(line) {
+  if (!writer) return;
+  await writer.write(new TextEncoder().encode(line + "\n"));
+}
+
+async function connect() {
+  if (port) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x1209, usbProductId: 0x0001 }, { usbVendorId: 0x045e, usbProductId: 0x028e }] });
+  } catch (e) { return; } // picker closed
+  await open();
+}
+
+async function open() {
+  try {
+    await port.open({ baudRate: 115200 });
+  } catch (e) { log("Could not open the port: " + e.message); port = null; return; }
+  writer = port.writable.getWriter();
+  $("connState").textContent = "Connected";
+  $("connectBtn").textContent = "Disconnect";
+  $("intro").hidden = true;
+  setEnabled(true);
+  await send("watch 2");
+  readLoop();
+}
+
+async function disconnect() {
+  try { await send("watch 0"); } catch (e) {}
+  try { await reader?.cancel(); } catch (e) {}
+  try { writer?.releaseLock(); } catch (e) {}
+  try { await port?.close(); } catch (e) {}
+  port = writer = reader = null;
+  onClosed();
+}
+
+function onClosed() {
+  port = writer = reader = null;
+  $("connState").textContent = "Not connected";
+  $("connectBtn").textContent = "Select bridge";
+  setEnabled(false);
+  for (const k in cards) cards[k].root.querySelector(".pad").classList.add("idle");
+}
+
+async function readLoop() {
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    while (port?.readable) {
+      reader = port.readable.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\n")) >= 0) { handleLine(buf.slice(0, i).trim()); buf = buf.slice(i + 1); }
+        }
+      } finally { reader.releaseLock(); }
+      break;
+    }
+  } catch (e) { log("Connection lost: " + e.message); }
+  if (port) { try { writer?.releaseLock(); await port.close(); } catch (e) {} onClosed(); }
+}
+
+function handleLine(line) {
+  if (!line) return;
+  if (line[0] !== "{") { if (!line.startsWith("# stat")) log(line); return; }
+  let m; try { m = JSON.parse(line); } catch (e) { log(line); return; }
+  if (m.type === "status") onStatus(m);
+  else if (m.type === "input") { inputs[m.slot] = m; drawInput(m.slot); }
+  else if (m.type === "learn") onLearn(m);
+  else if (m.type === "error") log("Bridge: " + m.msg);
+  else if (m.type === "ok") { if (m.cmd !== "watch") log("Done: " + m.cmd); }
+  else log(line);
+}
+
+function setEnabled(on) {
+  for (const id of ["rebootBtn", "bootBtn", "p1Select"]) $(id).disabled = !on;
+  document.querySelectorAll(".slot-actions button, .slot-actions input").forEach((b) => (b.disabled = !on));
+}
+
+// ───── slot cards ─────
+function colorOf(name) {
+  const n = (name || "").toLowerCase();
+  for (const k in COLORS) if (n.includes(k)) return COLORS[k];
+  return "var(--dim)";
+}
+
+function makeCard(i) {
+  const root = document.createElement("div");
+  root.className = "panel";
+  root.innerHTML = `
+    <div class="slot-head">
+      <span class="swatch"></span><span class="slot-name"></span><span class="pill"></span>
+      <span class="player"></span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="k">Reports</div><div class="v rate">–</div></div>
+      <div class="metric"><div class="k">Signal</div><div class="v rssi">–</div></div>
+      <div class="metric"><div class="k">Loss</div><div class="v loss">–</div></div>
+      <div class="metric"><div class="k">Retries</div><div class="v dup">–</div></div>
+    </div>
+    <div class="pad idle">
+      <div class="stick ls"><div class="dot"></div></div>
+      <div class="mid">
+        <div class="trig"><span>LT</span><div class="bar"><div class="lt"></div></div></div>
+        <div class="trig"><span>RT</span><div class="bar"><div class="rt"></div></div></div>
+        <div class="btns"></div>
+      </div>
+      <div class="stick rs"><div class="dot"></div></div>
+    </div>
+    <div class="learnbox hint" hidden></div>
+    <div class="row" style="justify-content:space-between">
+      <span class="addr"></span>
+      <div class="actions slot-actions"></div>
+    </div>`;
+  const btns = root.querySelector(".btns");
+  for (const [bit, label] of BUTTONS) {
+    const b = document.createElement("span"); b.className = "b"; b.dataset.bit = bit; b.textContent = label; btns.appendChild(b);
+  }
+  $("slots").appendChild(root);
+  cards[i] = { root, mode: "" };
+  return cards[i];
+}
+
+function renderActions(i, s) {
+  const c = cards[i];
+  const mode = s.link === "empty" ? "empty" : "used";
+  if (c.mode === mode) return;
+  c.mode = mode;
+  const box = c.root.querySelector(".slot-actions");
+  box.innerHTML = "";
+  if (mode === "used") {
+    const rename = button("Rename", () => startRename(i));
+    const forget = button("Forget", null, "danger");
+    forget.onclick = () => {
+      if (!forget.classList.contains("armed")) {
+        forget.classList.add("armed"); forget.textContent = "Click to confirm";
+        setTimeout(() => { forget.classList.remove("armed"); forget.textContent = "Forget"; }, 3000);
+        return;
+      }
+      send("forget " + i);
+    };
+    box.append(rename, forget);
+  } else {
+    box.append(button("Learn", () => startLearn(i), "primary"));
+    const addr = document.createElement("input");
+    addr.placeholder = "address, 10 hex digits"; addr.size = 22; addr.maxLength = 10;
+    const name = document.createElement("input");
+    name.placeholder = "name"; name.size = 8; name.maxLength = 15;
+    const set = button("Add", () => {
+      const a = addr.value.trim().toLowerCase();
+      if (!/^[0-9a-f]{10}$/.test(a)) { log("The address needs 10 hex digits, e.g. 66cc69c6ee"); return; }
+      send(`addr ${i} ${a} ${name.value.trim() || "Pad " + (i + 1)}`);
+    });
+    box.append(addr, name, set);
+  }
+  setEnabled(!!port);
+}
+
+function button(label, fn, cls) {
+  const b = document.createElement("button"); b.textContent = label; if (cls) b.className = cls; if (fn) b.onclick = fn; return b;
+}
+
+function startRename(i) {
+  const c = cards[i], nameEl = c.root.querySelector(".slot-name");
+  const inp = document.createElement("input");
+  inp.value = nameEl.textContent; inp.maxLength = 15; inp.size = 12;
+  nameEl.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return; done = true;
+    inp.replaceWith(nameEl);
+    const v = inp.value.trim().replace(/["\\]/g, "");
+    if (save && v && v !== nameEl.textContent) { nameEl.textContent = v; send(`name ${i} ${v}`); }
+  };
+  inp.onkeydown = (e) => { if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); };
+  inp.onblur = () => finish(true);
+}
+
+// ───── learn mode ─────
+function startLearn(i) {
+  const lb = cards[i].root.querySelector(".learnbox");
+  lb.hidden = false;
+  lb.innerHTML = "Unplug the controller's original Flydigi dongle, then turn the controller on (2.4 GHz mode). " +
+    "Other controllers drop for a few seconds while the bridge listens.";
+  send(`learn ${i} 60`);
+}
+function onLearn(m) {
+  const c = cards[m.slot]; if (!c) return;
+  const lb = c.root.querySelector(".learnbox");
+  lb.hidden = false;
+  const cancel = ` <button onclick="send('cancel')">Cancel</button>`;
+  if (m.state === "listening") {
+    const heard = m.candidates.length ? ` Heard: ${m.candidates.map((x) => x.addr + " (" + x.hits + ")").join(", ")}.` : "";
+    lb.innerHTML = `Listening for a controller… channel ${m.ch}, ${m.left} s left.${heard} ` +
+      "Turn the controller on now, with its original dongle unplugged." + cancel;
+  } else if (m.state === "confirming") {
+    lb.textContent = "Found " + m.candidates[m.candidates.length - 1].addr + ", connecting…";
+  } else if (m.state === "done") {
+    lb.textContent = "Learned " + m.addr + ". Press a button to check the preview, then rename it.";
+    setTimeout(() => (lb.hidden = true), 15000);
+    log(`Slot ${m.slot + 1}: learned ${m.addr}`);
+  } else {
+    const hint = m.reason === "nothing heard"
+      ? " Check the original dongle is unplugged and the controller is in 2.4 GHz mode, not Bluetooth."
+      : "";
+    lb.textContent = m.state === "cancelled" ? "Learn cancelled." : "Learn failed: " + m.reason + "." + hint;
+    setTimeout(() => (lb.hidden = true), 15000);
+  }
+}
+
+const LINK_TEXT = { up: "Connected", lost: "Signal lost", down: "Off", empty: "Empty slot" };
+
+function onStatus(m) {
+  status = m;
+  $("ch").textContent = m.ch;
+  $("hunt").textContent = m.hunt ? "yes, looking for controllers" : "no";
+  $("bad").textContent = m.bad + " / s";
+  $("fw").textContent = m.fw;
+  for (const s of m.slots) {
+    const c = cards[s.slot] || makeCard(s.slot), r = c.root;
+    const nameEl = r.querySelector(".slot-name");
+    if (nameEl.isConnected) nameEl.textContent = s.name || `Slot ${s.slot + 1}`;
+    r.querySelector(".swatch").style.background = colorOf(s.name);
+    const pill = r.querySelector(".pill");
+    pill.className = "pill " + s.link; pill.textContent = LINK_TEXT[s.link] || s.link;
+    r.querySelector(".player").textContent = s.player ? "Player " + s.player : "–";
+    r.querySelector(".player").style.visibility = s.player ? "visible" : "hidden";
+    const up = s.link === "up";
+    r.querySelector(".rate").innerHTML = up ? `${s.rate}<small> /s</small>` : "–";
+    r.querySelector(".rssi").innerHTML = up ? `${s.rssi}<small> dBm</small>` : "–";
+    // Controllers send about 100 reports a second; anything short of that never reached the bridge.
+    r.querySelector(".loss").innerHTML = up ? `${Math.max(0, 100 - s.rate)}<small> %</small>` : "–";
+    r.querySelector(".dup").innerHTML = up ? `${s.dup}<small> /s</small>` : "–";
+    r.querySelector(".addr").textContent = s.addr ? s.addr.match(/../g).join(" ") : "";
+    r.querySelector(".pad").classList.toggle("idle", !up);
+    renderActions(s.slot, s);
+  }
+  const sel = $("p1Select"), used = m.slots.filter((s) => s.link !== "empty");
+  const opts = used.map((s) => `${s.slot}:${s.name}`).join("|");
+  if (sel.dataset.opts !== opts) {
+    sel.dataset.opts = opts;
+    sel.innerHTML = used.map((s) => `<option value="${s.slot}">${escapeHtml(s.name || "Slot " + (s.slot + 1))}</option>`).join("");
+  }
+  if (document.activeElement !== sel) sel.value = String(m.order[0]);
+  sel.disabled = !port || used.length < 2;
+}
+
+function escapeHtml(t) { return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+function drawInput(i) {
+  const c = cards[i], m = inputs[i];
+  if (!c || !m) return;
+  const r = c.root;
+  const place = (el, x, y) => { el.style.left = 25 + (x / 32768) * 25 + "px"; el.style.top = 25 - (y / 32768) * 25 + "px"; };
+  place(r.querySelector(".ls .dot"), m.lx, m.ly);
+  place(r.querySelector(".rs .dot"), m.rx, m.ry);
+  r.querySelector(".ls").classList.toggle("click", !!(m.btn & 0x40));
+  r.querySelector(".rs").classList.toggle("click", !!(m.btn & 0x80));
+  r.querySelector(".lt").style.width = (m.lt / 255) * 100 + "%";
+  r.querySelector(".rt").style.width = (m.rt / 255) * 100 + "%";
+  r.querySelectorAll(".b").forEach((b) => b.classList.toggle("on", !!(m.btn & Number(b.dataset.bit))));
+}
+
+$("p1Select").onchange = () => {
+  if (!status) return;
+  const p1 = Number($("p1Select").value), other = status.slots.find((s) => s.slot !== p1);
+  send(`order ${p1} ${other.slot}`);
+};
+$("rebootBtn").onclick = () => send("reboot");
+$("bootBtn").onclick = () => { log("Firmware update mode: the board shows up as a USB drive. Copy the .uf2 file onto it."); send("bootloader"); };
+$("connectBtn").onclick = connect;
+
+if (!("serial" in navigator)) { $("noSerial").hidden = false; $("connectBtn").disabled = true; }
+else {
+  navigator.serial.addEventListener("disconnect", (e) => { if (e.target === port) { log("Bridge unplugged."); onClosed(); } });
+  // Reconnect without the picker if this page was allowed before.
+  navigator.serial.getPorts().then((ps) => {
+    const p = ps.find((p) => p.getInfo().usbVendorId === 0x1209) || ps[0];
+    if (p) { port = p; open(); }
+  });
+}
+
+// Demo mode (?demo): fake data, for working on the page without a bridge.
+if (location.search.includes("demo")) {
+  let t = 0;
+  setInterval(() => {
+    t += 0.05;
+    onStatus({ type: "status", fw: "demo", ch: 36, hunt: false, bad: 3, order: [1, 0], slots: [
+      { slot: 0, name: "Red", addr: "69cc966cee", link: "up", player: 2, rate: 97, dup: 1, rssi: -44 },
+      { slot: 1, name: "Blue", addr: "66cc69c6ee", link: "up", player: 1, rate: 100, dup: 0, rssi: -40 } ] });
+    for (const s of [0, 1]) {
+      inputs[s] = { slot: s, btn: (Math.floor(t * 2 + s) % 4 === 0 ? 0x1000 : 0) | (s ? 0x0200 : 0), lt: (Math.sin(t) * 0.5 + 0.5) * 255,
+        rt: s * 200, lx: Math.cos(t + s) * 30000, ly: Math.sin(t + s) * 30000, rx: 0, ry: s ? 20000 : 0 };
+      drawInput(s);
+    }
+  }, 50);
+}
+</script>
+</body>
+</html>

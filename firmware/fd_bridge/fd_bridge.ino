@@ -5,33 +5,46 @@
  * Radio: emulates the official dongle for up to 2 controllers at once (ESB PRX, 2 Mbps, one
  *        address per radio pipe, ack payloads). USB: one Xbox 360 interface per controller + CDC debug.
  *
- * Serial commands: c<ch>  S (toggle channel hunting)  v<slot> (raw dump)  s (stats)  p<mask> (slots)
- *                  t<us> (ack delay)  h<mode> (handshake reply mode)
+ * Slots (controller addresses, names, player order) live in flash: store.cpp.
+ * Console: word commands with JSON replies for the web page, plus the old one-letter debug commands.
+ * See docs/firmware.md.
  */
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
-#include "xinput.h"
 
-#define NSLOT 2
-// On-air (MSB-first) addresses, one per controller. Both must share the last byte (radio prefix rules
-// allow different BASE0/BASE1, so only pipes 0 and 1 are used).
-static uint8_t addrs[NSLOT][5] = {
-  {0x69, 0xcc, 0x96, 0x6c, 0xee},   // controller 1
-  {0x66, 0xcc, 0x69, 0xc6, 0xee},   // controller 2
-};
+// USB mode. 0 (default) = Windows composite mode: own VID/PID + MS OS 2.0 descriptors, Xbox pads + COM port.
+// 1 = Microsoft 045E:028E, needed for macOS to see a pad (Windows then hides the COM port).
+#ifndef USB_XBOX_IDS
+#define USB_XBOX_IDS 0
+#endif
+// Bump when the MS OS descriptors change: Windows caches them per VID/PID/bcdDevice.
+#define USB_BCD_DEVICE 0x0101
+#define FW_VERSION "0.2.0"
+#include "xinput.h"
+#include "store.h"
+
+// Slot n listens on radio pipe n (pipe 0 = BASE0, pipe 1 = BASE1, each with its own prefix byte).
 static uint8_t channel = 12;
 static int8_t verbose_slot = -1;
 // Reply to non-report packets (search pings, 21-B handshake): 0='02', 1='02 aa <b19+1> 00' (needed for handshake),
 // 2=none, 3='02 aa <b19> 00', 4=free-running clock, 5=clock for pings + '02' for 21-B
 static volatile uint8_t other_mode = 1;
 static bool scan_enabled = true;
-static uint8_t pipe_mask = 0x03;   // radio pipes (slots) enabled
+static uint8_t pipe_mask = 0x03;   // debug override (`p<mask>`); ANDed with the used slots
+static uint8_t pipes_enabled() {
+  uint8_t m = 0;
+  for (int i = 0; i < NSLOT; i++) if (cfg.slot[i].used) m |= 1 << i;
+  return m & pipe_mask;
+}
 
 struct Slot {
   uint8_t report[32];
   volatile bool fresh;
   volatile uint32_t last_ms;
   volatile uint32_t n_report, n_other;
+  volatile uint32_t n_new, n_dup;      // reports with a new counter (byte 30) / retransmits of the last one
+  volatile uint8_t last_ctr; volatile bool have_ctr;
+  volatile int16_t rssi_x16;           // smoothed RSSI, dBm * 16
   uint8_t other[34]; volatile bool other_fresh;
 };
 static Slot slot[NSLOT];
@@ -93,11 +106,11 @@ static void radio_init() {
   NRF_RADIO->FREQUENCY = channel;
   NRF_RADIO->PCNF0 = (6 << RADIO_PCNF0_LFLEN_Pos) | (3 << RADIO_PCNF0_S1LEN_Pos);
   NRF_RADIO->PCNF1 = (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) | (32 << RADIO_PCNF1_MAXLEN_Pos);
-  NRF_RADIO->BASE0 = base_of(addrs[0]);
-  NRF_RADIO->BASE1 = base_of(addrs[1]);
-  NRF_RADIO->PREFIX0 = ((uint32_t)rb(addrs[1][4]) << 8) | rb(addrs[0][4]);
+  NRF_RADIO->BASE0 = base_of(cfg.slot[0].addr);
+  NRF_RADIO->BASE1 = base_of(cfg.slot[1].addr);
+  NRF_RADIO->PREFIX0 = ((uint32_t)rb(cfg.slot[1].addr[4]) << 8) | rb(cfg.slot[0].addr[4]);
   NRF_RADIO->TXADDRESS = 0;
-  NRF_RADIO->RXADDRESSES = pipe_mask;
+  NRF_RADIO->RXADDRESSES = pipes_enabled();
   NRF_RADIO->CRCCNF = RADIO_CRCCNF_LEN_Two << RADIO_CRCCNF_LEN_Pos;
   NRF_RADIO->CRCINIT = 0xFFFF; NRF_RADIO->CRCPOLY = 0x11021;
   NRF_RADIO->INTENSET = RADIO_INTENSET_DISABLED_Msk;
@@ -143,8 +156,13 @@ extern "C" void RADIO_IRQHandler() {
   Slot &S = slot[pipe];
   uint8_t len = rx_buf[0] & 0x3f;
   tx_buf[1] = rx_buf[1];
+  int16_t rssi = -(int16_t)(NRF_RADIO->RSSISAMPLE & 0x7F) * 16;
+  S.rssi_x16 = S.rssi_x16 ? S.rssi_x16 + (rssi - S.rssi_x16) / 8 : rssi;
   if (len == 32) {
     S.n_report++;
+    uint8_t ctr = rx_buf[2 + 30];
+    if (S.have_ctr && ctr == S.last_ctr) S.n_dup++; else S.n_new++;
+    S.last_ctr = ctr; S.have_ctr = true;
     memcpy(S.report, rx_buf + 2, 32);
     S.fresh = true;
     S.last_ms = millis();
@@ -196,18 +214,383 @@ static void build_xinput(const uint8_t *r, uint8_t *o) {
   memcpy(o + 6, &lx, 2); memcpy(o + 8, &ly, 2); memcpy(o + 10, &rx, 2); memcpy(o + 12, &ry, 2);
 }
 
-// ───────────────────────── main ─────────────────────────
-static char cmd[64]; static int cl = 0;
+
+// ───────────────────────── players: slot -> Xbox interface ─────────────────────────
+// A slot is "linked" once reports arrive, and unlinked after LINK_LOST_MS of silence (hysteresis, so a short
+// dropout doesn't reshuffle players). Linked slots take the Xbox interfaces in cfg.order: with both linked,
+// order[0] is player 1; a lone controller is always player 1. An interface whose controller is gone, or
+// whose reports stopped for NEUTRAL_MS, gets one neutral report so no button stays held.
+#define LINK_LOST_MS 3000
+#define NEUTRAL_MS 150
+static bool linked[NSLOT];
+static int8_t itf_of[NSLOT] = {-1, -1};     // Xbox interface per slot, -1 = none
+static int8_t slot_on_itf[XI_MAX] = {-1, -1};
+static bool itf_neutral_due[XI_MAX];
 static uint32_t n_usb[NSLOT];
+static bool remap_due = true;
+
+static bool slot_up(int i) { return cfg.slot[i].used && millis() - slot[i].last_ms < 500 && slot[i].last_ms; }
+
+static void update_players() {
+  bool changed = remap_due;
+  remap_due = false;
+  uint32_t now = millis();
+  for (int i = 0; i < NSLOT; i++) {
+    bool l = cfg.slot[i].used && slot[i].last_ms &&
+             (linked[i] ? now - slot[i].last_ms < LINK_LOST_MS : now - slot[i].last_ms < 100);
+    if (l != linked[i]) { linked[i] = l; changed = true; }
+  }
+  if (!changed) return;
+  int8_t want[XI_MAX] = {-1, -1};
+  int n = 0;
+  for (int k = 0; k < NSLOT; k++) { int s = cfg.order[k]; if (linked[s] && n < XI_MAX) want[n++] = s; }
+  for (int i = 0; i < NSLOT; i++) itf_of[i] = -1;
+  for (int x = 0; x < XI_MAX; x++) {
+    if (want[x] != slot_on_itf[x]) itf_neutral_due[x] = true;
+    slot_on_itf[x] = want[x];
+    if (want[x] >= 0) itf_of[want[x]] = x;
+  }
+}
+
+static void send_neutrals() {
+  uint32_t now = millis();
+  for (int x = 0; x < XI_MAX; x++) {
+    int s = slot_on_itf[x];
+    if (s >= 0 && !itf_neutral_due[x] && now - slot[s].last_ms > NEUTRAL_MS) itf_neutral_due[x] = true;
+    if (!itf_neutral_due[x] || !xinput_ready(x)) continue;
+    if (s >= 0 && slot[s].fresh) { itf_neutral_due[x] = false; continue; }   // real data is about to go out
+    uint8_t o[20] = {0x00, 0x14};
+    if (xinput_send(x, o, 20)) itf_neutral_due[x] = false;
+  }
+}
+
+// ───────────────────────── telemetry ─────────────────────────
+struct Tele { uint32_t prev_new, prev_dup; uint16_t rate, dup; };
+static Tele tele[NSLOT];
+static uint32_t prev_bad, tele_ms;
+static uint16_t bad_rate;
+static void update_tele() {              // per-second rates
+  if (millis() - tele_ms < 1000) return;
+  tele_ms = millis();
+  for (int i = 0; i < NSLOT; i++) {
+    uint32_t nn = slot[i].n_new, nd = slot[i].n_dup;
+    tele[i].rate = nn - tele[i].prev_new; tele[i].dup = nd - tele[i].prev_dup;
+    tele[i].prev_new = nn; tele[i].prev_dup = nd;
+  }
+  bad_rate = n_bad - prev_bad; prev_bad = n_bad;
+}
+static bool hunting();
+
+// ───────────────────────── console ─────────────────────────
+// Word commands answer with one JSON object per line (see docs/firmware.md). Lines that don't start with a
+// known word fall through to the old one-letter debug commands.
+static char cmd[96]; static int cl = 0;
+static uint8_t watch_level = 0;
+static uint32_t last_watch_status = 0, last_input_ms[NSLOT];
+static bool legacy_stats = true;
+
+static void addr_hex(const uint8_t *a, char *out) { for (int k = 0; k < 5; k++) sprintf(out + 2 * k, "%02x", a[k]); }
+static bool parse_addr(const char *h, uint8_t *a) {
+  if (strlen(h) != 10) return false;
+  for (int k = 0; k < 5; k++) {
+    char b[3] = {h[2 * k], h[2 * k + 1], 0}; char *e;
+    a[k] = strtoul(b, &e, 16);
+    if (*e) return false;
+  }
+  return true;
+}
+
+static void print_status() {
+  Serial.printf("{\"type\":\"status\",\"fw\":\"" FW_VERSION "\",\"ch\":%u,\"hunt\":%s,\"bad\":%u,\"order\":[%u,%u],\"slots\":[",
+                channel, hunting() ? "true" : "false", bad_rate, cfg.order[0], cfg.order[1]);
+  for (int i = 0; i < NSLOT; i++) {
+    const SlotCfg &c = cfg.slot[i];
+    char a[11] = "";
+    if (c.used) addr_hex(c.addr, a);
+    const char *link = !c.used ? "empty" : slot_up(i) ? "up" : linked[i] ? "lost" : "down";
+    Serial.printf("%s{\"slot\":%d,\"name\":\"%s\",\"addr\":\"%s\",\"kind\":%u,\"link\":\"%s\",\"player\":%d,"
+                  "\"rate\":%u,\"dup\":%u,\"rssi\":%d,\"usb\":%lu}",
+                  i ? "," : "", i, c.used ? c.name : "", a, c.kind, link, itf_of[i] + 1, tele[i].rate, tele[i].dup,
+                  slot_up(i) ? slot[i].rssi_x16 / 16 : 0, n_usb[i]);
+  }
+  Serial.println("]}");
+}
+static void print_input(int i, const uint8_t *o) {
+  int16_t lx, ly, rx, ry;
+  memcpy(&lx, o + 6, 2); memcpy(&ly, o + 8, 2); memcpy(&rx, o + 10, 2); memcpy(&ry, o + 12, 2);
+  Serial.printf("{\"type\":\"input\",\"slot\":%d,\"btn\":%u,\"lt\":%u,\"rt\":%u,\"lx\":%d,\"ly\":%d,\"rx\":%d,\"ry\":%d}\n",
+                i, o[2] | (o[3] << 8), o[4], o[5], lx, ly, rx, ry);
+}
+static void reply_ok(const char *c) { Serial.printf("{\"type\":\"ok\",\"cmd\":\"%s\"}\n", c); }
+static void reply_err(const char *msg) { Serial.printf("{\"type\":\"error\",\"msg\":\"%s\"}\n", msg); }
+
+static void save_cfg() {                 // flash write stalls the CPU: take the radio down around it
+  NVIC_DisableIRQ(RADIO_IRQn);
+  radio_off();
+  bool ok = store_save();
+  radio_init();
+  if (!ok) reply_err("flash write failed");
+}
+static int parse_slot(const char *t) {
+  if (!t || !*t) return -1;
+  char *e; long v = strtol(t, &e, 10);
+  return (*e || v < 0 || v >= NSLOT) ? -1 : (int)v;
+}
+static void clear_slot_state(int i) {
+  NVIC_DisableIRQ(RADIO_IRQn);
+  memset((void *)&slot[i], 0, sizeof slot[i]);
+  NVIC_EnableIRQ(RADIO_IRQn);
+  memset(&tele[i], 0, sizeof tele[i]);
+  remap_due = true;
+}
+
+
+// ───────────────────────── learn mode ─────────────────────────
+// Adopt a searching controller's existing address (docs/learn-and-pairing-plan.md §4). Normal serving stops;
+// the radio runs promiscuous (2-byte match on preamble-like bits, 34 raw bytes, no hardware CRC) and hops
+// channels 2-80. Every capture is searched in software for an ESB packet: at each bit offset take 5 address
+// bytes + 9-bit header, and check CRC-16 (init FFFF, poly 1021) over address, header and payload.
+// An address with LEARN_HITS valid packets becomes the candidate; then normal mode takes it on the slot's pipe
+// and waits for reports before saving.
+#define LEARN_DWELL_MS 15
+#define LEARN_HITS 5
+#define LEARN_CONFIRM_MS 6000
+enum { L_OFF, L_SCAN, L_CONFIRM };
+static uint8_t learn_state = L_OFF, learn_slot;
+static uint32_t learn_deadline, learn_hop_ms, learn_msg_ms, learn_confirm_ms;
+static uint8_t learn_raw[34];
+static SlotCfg learn_prev;
+struct Cand { uint8_t addr[5]; uint8_t hits, ch; int8_t rssi; };
+#define NCAND 6
+static Cand cand[NCAND];
+static uint8_t ncand;
+
+static inline uint8_t rawbit(const uint8_t *b, int i) { return (b[i >> 3] >> (7 - (i & 7))) & 1; }
+static uint32_t rawbits(const uint8_t *b, int i, int n) { uint32_t v = 0; while (n--) v = (v << 1) | rawbit(b, i++); return v; }
+// Returns true and fills addr if an ESB packet with a valid CRC starts at bit `off`.
+static bool esb_at(const uint8_t *b, int off, uint8_t *addr) {
+  const int total = 34 * 8;
+  if (off + 40 + 9 > total) return false;
+  uint8_t len = rawbits(b, off + 40, 6);
+  if (len == 0 || len > 32) return false;
+  int nbits = 40 + 9 + len * 8;
+  if (off + nbits + 16 > total) return false;
+  uint16_t crc = 0xFFFF;
+  for (int i = 0; i < nbits; i++) {
+    crc ^= (uint16_t)rawbit(b, off + i) << 15;
+    crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+  }
+  if (crc != rawbits(b, off + nbits, 16)) return false;
+  for (int k = 0; k < 5; k++) addr[k] = rawbits(b, off + 8 * k, 8);
+  return true;
+}
+static void learn_radio_rx() {
+  NRF_RADIO->EVENTS_END = 0; NRF_RADIO->EVENTS_DISABLED = 0;
+  NRF_RADIO->PACKETPTR = (uint32_t)learn_raw;
+  NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk |
+                      RADIO_SHORTS_ADDRESS_RSSISTART_Msk | RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
+  NRF_RADIO->TASKS_RXEN = 1;
+}
+static void learn_radio_init() {
+  NVIC_DisableIRQ(RADIO_IRQn);
+  ack_arm(false); NRF_TIMER3->TASKS_STOP = 1;
+  radio_off();
+  NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit << RADIO_MODE_MODE_Pos;
+  NRF_RADIO->FREQUENCY = channel;
+  NRF_RADIO->PCNF0 = 0;
+  NRF_RADIO->PCNF1 = (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) | (1 << RADIO_PCNF1_BALEN_Pos) |
+                     (34 << RADIO_PCNF1_STATLEN_Pos) | (34 << RADIO_PCNF1_MAXLEN_Pos);
+  NRF_RADIO->BASE0 = 0; NRF_RADIO->BASE1 = 0;
+  NRF_RADIO->PREFIX0 = (0x55 << 8) | 0xAA;
+  NRF_RADIO->RXADDRESSES = 0x03;
+  NRF_RADIO->CRCCNF = 0;
+  learn_radio_rx();
+}
+static void learn_msg(const char *state) {
+  Serial.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"ch\":%u,\"left\":%ld,\"candidates\":[",
+                state, learn_slot, channel, (long)((int32_t)(learn_deadline - millis()) / 1000));
+  for (int i = 0; i < ncand; i++) {
+    char a[11]; addr_hex(cand[i].addr, a);
+    Serial.printf("%s{\"addr\":\"%s\",\"hits\":%u,\"ch\":%u,\"rssi\":%d}", i ? "," : "", a, cand[i].hits, cand[i].ch, cand[i].rssi);
+  }
+  Serial.println("]}");
+}
+static void learn_end(const char *state, const char *reason) {
+  Serial.printf("{\"type\":\"learn\",\"state\":\"%s\",\"slot\":%u,\"reason\":\"%s\"}\n", state, learn_slot, reason);
+  learn_state = L_OFF;
+}
+static bool learn_start(int s, int timeout_s) {
+  learn_slot = s; learn_prev = cfg.slot[s];
+  ncand = 0;
+  learn_deadline = millis() + (uint32_t)timeout_s * 1000;
+  learn_state = L_SCAN;
+  channel = 2; learn_hop_ms = learn_msg_ms = millis();
+  learn_radio_init();
+  learn_msg("listening");
+  return true;
+}
+static void learn_cancel() {
+  if (learn_state == L_OFF) return;
+  cfg.slot[learn_slot] = learn_prev;
+  clear_slot_state(learn_slot);
+  learn_end("cancelled", "");
+  radio_init();
+}
+static void learn_found(int k) {
+  const Cand &c = cand[k];
+  learn_state = L_CONFIRM;
+  SlotCfg &sc = cfg.slot[learn_slot];
+  sc.used = 1; sc.kind = 1; memcpy(sc.addr, c.addr, 5);
+  if (!learn_prev.used) snprintf(sc.name, sizeof sc.name, "Pad %u", learn_slot + 1);
+  clear_slot_state(learn_slot);
+  channel = c.ch;
+  radio_init();                          // normal serving, all slots, on the channel it was heard on
+  learn_confirm_ms = millis();
+  learn_msg("confirming");
+}
+static void learn_step() {
+  if (learn_state == L_OFF) return;
+  uint32_t now = millis();
+  if (learn_state == L_CONFIRM) {
+    if (slot[learn_slot].n_new >= 20) {  // steady reports: keep it
+      save_cfg();
+      char a[11]; addr_hex(cfg.slot[learn_slot].addr, a);
+      Serial.printf("{\"type\":\"learn\",\"state\":\"done\",\"slot\":%u,\"addr\":\"%s\"}\n", learn_slot, a);
+      learn_state = L_OFF;
+    } else if (now - learn_confirm_ms > LEARN_CONFIRM_MS) {
+      cfg.slot[learn_slot] = learn_prev;
+      clear_slot_state(learn_slot);
+      radio_init();
+      learn_end("failed", "heard the controller but it didn't connect");
+    }
+    return;
+  }
+  if ((int32_t)(now - learn_deadline) > 0) {
+    cfg.slot[learn_slot] = learn_prev;
+    radio_init();
+    learn_end("failed", ncand ? "not enough packets" : "nothing heard");
+    return;
+  }
+  if (NRF_RADIO->EVENTS_DISABLED) {      // a capture is ready
+    int8_t rssi = -(int8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);
+    uint8_t buf[34]; memcpy(buf, learn_raw, 34);
+    learn_radio_rx();
+    uint8_t a[5];
+    for (int off = 0; off <= 24; off++) {
+      if (!esb_at(buf, off, a)) continue;
+      bool other = false;
+      for (int i = 0; i < NSLOT; i++)
+        if (i != learn_slot && cfg.slot[i].used && !memcmp(cfg.slot[i].addr, a, 5)) other = true;
+      if (other) break;
+      int k = 0;
+      while (k < ncand && memcmp(cand[k].addr, a, 5)) k++;
+      if (k == ncand) {
+        if (ncand == NCAND) break;
+        memcpy(cand[k].addr, a, 5); cand[k].hits = 0; ncand++;
+      }
+      Cand &c = cand[k];
+      if (c.hits < 255) c.hits++;
+      c.ch = channel; c.rssi = rssi;
+      learn_hop_ms = now;                // stay on this channel while it's talking
+      if (c.hits >= LEARN_HITS) { learn_found(k); return; }
+      break;
+    }
+  }
+  if (now - learn_hop_ms >= LEARN_DWELL_MS) {
+    learn_hop_ms = now;
+    channel = (channel >= 80) ? 2 : channel + 1;
+    NRF_RADIO->SHORTS = 0; NRF_RADIO->EVENTS_DISABLED = 0; NRF_RADIO->TASKS_DISABLE = 1;
+    while (!NRF_RADIO->EVENTS_DISABLED);
+    NRF_RADIO->FREQUENCY = channel;
+    learn_radio_rx();
+  }
+  if (now - learn_msg_ms >= 500) { learn_msg_ms = now; learn_msg("listening"); }
+}
+
+// Returns false if the line isn't a word command.
+static bool handle_word(char *line) {
+  char *save, *w = strtok_r(line, " ", &save);
+  if (!w) return true;
+  char *a1 = strtok_r(NULL, " ", &save);
+  if (!strcmp(w, "status")) { print_status(); return true; }
+  if (!strcmp(w, "watch")) {
+    watch_level = a1 ? atoi(a1) : 1;
+    if (watch_level > 2) watch_level = 2;
+    legacy_stats = watch_level == 0;
+    reply_ok(w); return true;
+  }
+  if (!strcmp(w, "name")) {
+    int s = parse_slot(a1);
+    char *txt = save;                    // rest of the line
+    if (s < 0 || !cfg.slot[s].used || !txt || !*txt) { reply_err("usage: name <slot> <text>"); return true; }
+    char clean[16]; int n = 0;
+    for (char *c = txt; *c && n < 15; c++) if (*c >= 0x20 && *c < 0x7f && *c != '"' && *c != '\\') clean[n++] = *c;
+    clean[n] = 0;
+    memcpy(cfg.slot[s].name, clean, 16);
+    save_cfg(); reply_ok(w); return true;
+  }
+  if (!strcmp(w, "forget")) {
+    int s = parse_slot(a1);
+    if (s < 0) { reply_err("usage: forget <slot>"); return true; }
+    memset(&cfg.slot[s], 0, sizeof cfg.slot[s]);
+    clear_slot_state(s);
+    save_cfg(); reply_ok(w); return true;
+  }
+  if (!strcmp(w, "addr")) {              // set a slot's address by hand: addr <slot> <10 hex> [name]
+    int s = parse_slot(a1);
+    char *h = strtok_r(NULL, " ", &save);
+    uint8_t a[5];
+    if (s < 0 || !h || !parse_addr(h, a)) { reply_err("usage: addr <slot> <10 hex on-air> [name]"); return true; }
+    for (int i = 0; i < NSLOT; i++)
+      if (i != s && cfg.slot[i].used && !memcmp(cfg.slot[i].addr, a, 5)) { reply_err("address already in another slot"); return true; }
+    SlotCfg &c = cfg.slot[s];
+    c.used = 1; c.kind = 1; memcpy(c.addr, a, 5);
+    char *nm = save && *save ? save : (char *)(s == 0 ? "Red" : "Blue");
+    memset(c.name, 0, 16); strncpy(c.name, nm, 15);
+    clear_slot_state(s);
+    save_cfg(); reply_ok(w); return true;
+  }
+  if (!strcmp(w, "order")) {             // order <slot for player 1> <slot for player 2>
+    int s0 = parse_slot(a1), s1 = parse_slot(strtok_r(NULL, " ", &save));
+    if (s0 < 0 || s1 < 0 || s0 == s1) { reply_err("usage: order <slot> <slot>"); return true; }
+    cfg.order[0] = s0; cfg.order[1] = s1;
+    remap_due = true;
+    save_cfg(); reply_ok(w); return true;
+  }
+  if (!strcmp(w, "channel")) {
+    if (a1 && !strcmp(a1, "auto")) scan_enabled = true;
+    else if (a1 && atoi(a1) >= 0 && atoi(a1) <= 100) { scan_enabled = false; channel = atoi(a1); radio_init(); }
+    else { reply_err("usage: channel <auto|0-100>"); return true; }
+    reply_ok(w); return true;
+  }
+  if (!strcmp(w, "learn")) {            // learn <slot> [timeout_s]
+    int sl = parse_slot(a1);
+    char *t = strtok_r(NULL, " ", &save);
+    int to = t ? atoi(t) : 60;
+    if (sl < 0 || to < 5 || to > 600) { reply_err("usage: learn <slot> [5-600 s]"); return true; }
+    if (learn_state != L_OFF) learn_cancel();
+    reply_ok(w); learn_start(sl, to); return true;
+  }
+  if (!strcmp(w, "cancel")) { learn_cancel(); reply_ok(w); return true; }
+  if (!strcmp(w, "defaults")) { store_defaults(); for (int i = 0; i < NSLOT; i++) clear_slot_state(i); save_cfg(); reply_ok(w); return true; }
+  if (!strcmp(w, "reboot")) { reply_ok(w); Serial.flush(); delay(50); NVIC_SystemReset(); }
+  if (!strcmp(w, "bootloader")) { reply_ok(w); Serial.flush(); delay(50); enterUf2Dfu(); }
+  if (!strcmp(w, "version")) { Serial.println("{\"type\":\"version\",\"fw\":\"" FW_VERSION "\"}"); return true; }
+  return false;
+}
+
 static void print_stats() {
   Serial.printf("# stat ch=%u bad=%lu turn=%luus", channel, n_bad, turn_n ? turn_sum / turn_n : 0);
   turn_sum = turn_n = 0;
   for (int i = 0; i < NSLOT; i++)
-    Serial.printf(" | c%d %s rep=%lu oth=%lu usb=%lu rum=%u/%u", i + 1, (millis() - slot[i].last_ms < 500) ? "UP" : "down",
-                  slot[i].n_report, slot[i].n_other, n_usb[i], xinput_rumble_l[i], xinput_rumble_r[i]);
+    Serial.printf(" | c%d %s P%d rep=%lu dup=%lu oth=%lu usb=%lu rssi=%d", i + 1, slot_up(i) ? "UP" : "down", itf_of[i] + 1,
+                  slot[i].n_report, slot[i].n_dup, slot[i].n_other, n_usb[i], slot[i].rssi_x16 / 16);
   Serial.println();
 }
 static void handle(char *c) {
+  char copy[sizeof cmd]; strcpy(copy, c);
+  if (handle_word(copy)) return;
+  if (c[1] && !isdigit((unsigned char)c[1])) { reply_err("unknown command"); return; }   // one-letter + number only
   switch (c[0]) {
     case 'c': channel = strtoul(c + 1, 0, 10); radio_init(); break;
     case 'v': { int s = strtol(c + 1, 0, 10) - 1; verbose_slot = (verbose_slot == s) ? -1 : s; } break;
@@ -216,17 +599,26 @@ static void handle(char *c) {
     case 't': tx_delay_us = strtoul(c + 1, 0, 10); radio_init(); break;
     case 'S': scan_enabled = !scan_enabled; break;
     case 'p': pipe_mask = strtoul(c + 1, 0, 10); radio_init(); break;
+    default: reply_err("unknown command"); return;
   }
   Serial.printf("# ok ch=%u verbose=%d other_mode=%u tx_delay=%lu scan=%d\n", channel, verbose_slot + 1, other_mode, tx_delay_us, scan_enabled);
 }
 
+// ───────────────────────── main ─────────────────────────
 void setup() {
-  TinyUSBDevice.setID(0x045E, 0x028E);
+#if USB_XBOX_IDS
+  TinyUSBDevice.setID(0x045E, 0x028E);   // macOS sees a pad; Windows binds the whole device to the Xbox driver (no COM port)
+#else
+  TinyUSBDevice.setID(0x1209, 0x0001);   // pid.codes test PID: Windows loads usbccgp, so the COM port shows up
+  TinyUSBDevice.setDeviceVersion(USB_BCD_DEVICE);
+  xinput_enable_msos();
+#endif
   TinyUSBDevice.setManufacturerDescriptor("Flydigi");
   TinyUSBDevice.setProductDescriptor("Flydigi Bridge");
   xinput_add(NSLOT);
   if (TinyUSBDevice.mounted()) { TinyUSBDevice.detach(); delay(10); TinyUSBDevice.attach(); }
   Serial.begin(115200);
+  store_load();
   NRF_CLOCK->TASKS_HFCLKSTART = 1;
   while (!NRF_CLOCK->EVENTS_HFCLKSTARTED);
   NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
@@ -235,37 +627,48 @@ void setup() {
 }
 
 static uint32_t last_hop = 0;
+static bool hunting() {
+  if (!scan_enabled) return false;
+  for (int i = 0; i < NSLOT; i++) if (cfg.slot[i].used && millis() - slot[i].last_ms < 1000 && slot[i].last_ms) return false;
+  return millis() - any_rx_ms >= 300;
+}
 static void scan_step() {
-  if (!scan_enabled) return;
-  uint32_t now = millis();
-  bool anyone = false;
-  for (int i = 0; i < NSLOT; i++) if (now - slot[i].last_ms < 1000) anyone = true;
-  if (anyone || now - any_rx_ms < 300 || now - last_hop < 25) return;
-  last_hop = now;
+  if (!hunting() || millis() - last_hop < 25) return;
+  last_hop = millis();
   channel = (channel >= 80) ? 2 : channel + 1;
   radio_init();
 }
 
 static uint32_t last_stat = 0;
 void loop() {
-  scan_step();
+  learn_step();
+  if (learn_state != L_SCAN) scan_step();
   while (Serial.available()) {
     char ch = Serial.read();
     if (ch == '\n' || ch == '\r') { if (cl) { cmd[cl] = 0; handle(cmd); cl = 0; } }
     else if (cl < (int)sizeof(cmd) - 1) cmd[cl++] = ch;
   }
+  update_players();
+  update_tele();
   for (int i = 0; i < NSLOT; i++) {
-    if (!slot[i].fresh || !xinput_ready(i)) continue;
+    int x = itf_of[i];
+    if (!slot[i].fresh) continue;
+    bool usb_ok = x >= 0 && xinput_ready(x);
+    bool want_input = watch_level >= 2 && millis() - last_input_ms[i] >= 20;
+    // Keep the report for USB if the interface is busy, unless the console wants it (it doesn't wait on USB).
+    if (!usb_ok && !want_input && x >= 0) continue;
     uint8_t r[32], o[20];
     NVIC_DisableIRQ(RADIO_IRQn); memcpy(r, slot[i].report, 32); slot[i].fresh = false; NVIC_EnableIRQ(RADIO_IRQn);
     build_xinput(r, o);
-    if (xinput_send(i, o, 20)) n_usb[i]++;
+    if (usb_ok && xinput_send(x, o, 20)) { n_usb[i]++; itf_neutral_due[x] = false; }
+    if (want_input) { last_input_ms[i] = millis(); print_input(i, o); }
     if (verbose_slot == i) {
       char line[80]; int n = snprintf(line, sizeof line, "R%d ", i + 1);
       for (int k = 0; k < 32; k++) n += snprintf(line + n, sizeof line - n, "%02x", r[k]);
       Serial.println(line);
     }
   }
+  send_neutrals();
   for (int i = 0; i < NSLOT; i++) {
     if (!slot[i].other_fresh) continue;
     if (verbose_slot == i) {
@@ -276,5 +679,6 @@ void loop() {
     }
     slot[i].other_fresh = false;
   }
-  if (millis() - last_stat >= 2000) { last_stat = millis(); print_stats(); }
+  if (watch_level && millis() - last_watch_status >= 200) { last_watch_status = millis(); print_status(); }
+  if (legacy_stats && millis() - last_stat >= 2000) { last_stat = millis(); print_stats(); }
 }

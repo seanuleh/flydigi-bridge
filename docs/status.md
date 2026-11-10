@@ -24,10 +24,18 @@ Last updated 2026-11-10.
   often only about half the reports arrived. On the long cable the same firmware had no drops. Run the
   board on a USB extension, away from the PC case.
 
+- **Slots in flash, learn mode, web page (2026-11-10, tested on macOS only):**
+  - controller addresses, names and player order are stored in flash; the old hardcoded pair is the default;
+  - player rule: with both on, Blue is player 1; a controller on its own is player 1;
+  - learn mode re-learned blue in about 1 s;
+  - `web/index.html` (Web Serial): slot cards with live input, signal and loss, rename, forget, learn,
+    player choice. Renders in demo mode (`?demo`); **not yet used against the real bridge** (needs the
+    port picker click).
+
 ## Known issues and limits
 
-- Controller addresses are hardcoded (learn mode is planned).
-- macOS shows only the first of the two Xbox interfaces.
+- macOS shows only the first of the two Xbox interfaces, and none at all in the default (Windows composite)
+  USB mode. Build with `USB_XBOX_IDS=1` to get a pad on the Mac.
 - **No COM port on Windows.** Because VID/PID is 045E:028E, the Xbox composite driver claims the whole
   device instead of `usbccgp`, so the CDC debug interface never enumerates. Web Serial is out on Windows
   as things stand.
@@ -40,15 +48,16 @@ Last updated 2026-11-10.
   Probably a badly seated plug; not reproduced on the retry.
 - Not tested: a 30-minute-plus session, wake after hours of sleep (the user chose to skip these).
 
-## Next step: the config channel
+## Next step: Windows test of the composite build
 
-Done: enumeration, two pads in a gamepad tester, power-on orders, sleep and wake. COM port: none
-(see Known issues).
-
-1. Config channel for the web UI. Web Serial is out on Windows, so the leading option is a
-   vendor (`FF`) interface with MS OS 2.0 descriptors (WinUSB) plus a WebUSB landing page (unverified:
-   check that the Xbox composite driver leaves a WinUSB interface alone). The fallback is a separate debug
-   build with CDC under a non-Microsoft VID/PID.
+1. Flash `fd_bridge` (default build) on the HTPC: double-tap reset, copy the UF2 (firmware.md, "USB").
+2. Check Device Manager: two Xbox 360 controllers **and** a COM port, no warning icons.
+   If the pads don't get a driver, check which IDs `C:\Windows\INF\xusb22.inf` lists
+   (`findstr /i "USB\\" C:\Windows\INF\xusb22.inf`) and try `XUSB20`; otherwise fall back to WebUSB.
+3. Gamepad tester: both pads; player order Blue then Red; one controller alone is player 1;
+   turning a controller off releases its buttons (neutral report).
+4. Open `web/index.html` in Chrome or Edge (serve it from localhost, or publish it over https), connect,
+   and try rename, learn and the player choice.
 
 ## Then
 

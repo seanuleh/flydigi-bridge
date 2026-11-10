@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 nRF52840 firmware that replaces Flydigi Vader 4 Pro 2.4 GHz dongles; one board serves several controllers as USB
-Xbox 360 pads. Layout: `firmware/` (Arduino sketches), `tools/` (host scripts), `docs/`, `captures/` (radio logs).
+Xbox 360 pads. Layout: `firmware/` (Arduino sketches), `tools/` (host scripts), `web/` (Web Serial config page), `docs/`,
+`captures/` (radio logs).
 
 ## Docs index: read only what the task needs
 
