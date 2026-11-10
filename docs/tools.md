@@ -12,6 +12,7 @@ Python 3 with `pyserial` and `pyusb` (with libusb). macOS for the Swift and sudo
 | `gc_dump.swift` | `swiftc -O -o tools/gc_dump tools/gc_dump.swift`, then `tools/gc_dump SECS` prints `G <t> name=value…` whenever a macOS game controller changes |
 | `correlate_capture.py SECS OUT` | Runs `gc_dump` and fd_sniff together. Map buttons by pressing everything once |
 | `correlate.py OUT` | Matches each radio report bit to a GameController input (overlap score), and samples stick/trigger bytes |
+| `xinput_watch.py SECS OUT` | **Windows.** Logs XInput pads: `PRESS` per button (tell the pads apart), `QUIET`/`ACTIVE` when a pad stops and starts changing (a radio drop; the bridge's pads never disconnect at USB level), `GAP` after PC sleep, and a per-minute update count (about 6000 means every report arrived) |
 | `legacy/whad/*` | June 2026 WHAD/ButteRFly scripts. They need the `whad` package, and patch around its Scanner bug |
 
 ## Recipes
