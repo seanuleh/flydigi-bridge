@@ -1,6 +1,6 @@
 # Status and next steps
 
-Last updated 2026-11-10.
+Last updated 2026-11-25.
 
 ## Working
 
@@ -34,7 +34,7 @@ Last updated 2026-11-10.
   - Hosted at **https://seanuleh.github.io/flydigi-bridge/** (GitHub Pages, branch `gh-pages`, which holds only
     `index.html`). To republish after changing `web/index.html`: commit to main, then push a new `gh-pages`
     commit whose tree is just that file (`git hash-object -w` → `git mktree` → `git commit-tree -p origin/gh-pages`).
-- **TX power +8 dBm** (the maximum; only makes our acks louder, not our hearing).
+- **TX power +8 dBm** (the maximum; only makes our acks louder, not our hearing). HolyIoT PA dongle: 0 dBm into the PA.
 
 - **Automatic channel moves (2026-11-10, Mac):** heavy loss on one channel (about 35 of 100 reports, both
   controllers alike) turned out to be the channel itself, not hardware. The bridge now leaves a bad channel by
@@ -65,9 +65,11 @@ Last updated 2026-11-10.
   web page now streams only while its tab is visible and closes the port when the page goes away. Tested on the
   HTPC: `hang` restarts it by itself; port held open unread for 20 s, no freeze. If `boot` ever says `watchdog`,
   the stage number says where it was stuck.
-- **Big-antenna HolyIoT board arrived (user, 2026-11-25).** Not tested yet. Next: flash it, repeat the
-  couch RSSI test (Blue alone, 90 s, same channel) and compare with the wire mod below. It needs native USB
-  and the Adafruit UF2 bootloader ([plan](learn-and-pairing-plan.md)).
+- **HolyIoT 21017 nRF52840+PA dongle runs the bridge (2026-11-25).** Flashed over its Nordic bootloader
+  (magnet reset + nrfutil), own build variant, PA/LNA switched by PPI. Blue links at full rate next to the Mac
+  (~95 reports/s, RSSI -46, which reads ~13 dB high because of the LNA). Details: [holyiot.md](holyiot.md).
+  Both controllers at full rate (~95/s each). TX power into the PA set to 0 dBm. Next: couch test and antenna
+  angle on the HTPC: [couch-test.md](couch-test.md).
 - **Antenna mod works (user, 2026-11-10).** 31 mm wire across the chip antenna. Couch, Blue alone, 90 s
   (fw 0.2.1): −60 to −75 dBm (was −83 to −85), 90–100 reports a second, linked the whole time apart from
   about 15 s of automatic channel moves (was about 12 of 60 s linked). Channels 5–8 are noisy (dips to 56

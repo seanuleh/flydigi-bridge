@@ -9,6 +9,44 @@
 
 using namespace Adafruit_LittleFS_Namespace;
 
+#ifdef FD_FS_ADDR
+// Boards with Nordic's bootloader (HolyIoT 21017): it starts at 0xE0000, so the core's InternalFS area
+// (0xED000-0xF4000) lies inside it. Same LittleFS layout, moved to FD_FS_ADDR: the pages just below the
+// bootloader that Nordic DFU keeps for app data (NRF_DFU_APP_DATA_AREA_SIZE, 3 pages by default).
+#include "flash/flash_nrf5x.h"
+#define FS_BLOCK 128
+#define FS_SIZE (FD_FS_PAGES * FLASH_NRF52_PAGE_SIZE)
+static_assert(FD_FS_ADDR + FS_SIZE <= 0xE0000, "config area overlaps the Nordic bootloader");
+static int fs_read(const struct lfs_config *, lfs_block_t b, lfs_off_t off, void *buf, lfs_size_t n) {
+  return flash_nrf5x_read(buf, FD_FS_ADDR + b * FS_BLOCK + off, n) > 0 ? 0 : -1;
+}
+static int fs_prog(const struct lfs_config *, lfs_block_t b, lfs_off_t off, const void *buf, lfs_size_t n) {
+  return flash_nrf5x_write(FD_FS_ADDR + b * FS_BLOCK + off, buf, n) ? 0 : -1;
+}
+static int fs_erase(const struct lfs_config *, lfs_block_t b) {
+  for (int i = 0; i < FS_BLOCK; i++) flash_nrf5x_write8(FD_FS_ADDR + b * FS_BLOCK + i, 0xFF);
+  return 0;
+}
+static int fs_sync(const struct lfs_config *) { flash_nrf5x_flush(); return 0; }
+static struct lfs_config fs_cfg = {
+  .context = NULL, .read = fs_read, .prog = fs_prog, .erase = fs_erase, .sync = fs_sync,
+  .read_size = FS_BLOCK, .prog_size = FS_BLOCK, .block_size = FS_BLOCK, .block_count = FS_SIZE / FS_BLOCK,
+  .lookahead = 128, .read_buffer = NULL, .prog_buffer = NULL, .lookahead_buffer = NULL, .file_buffer = NULL};
+class BridgeFS : public Adafruit_LittleFS {
+ public:
+  BridgeFS() : Adafruit_LittleFS(&fs_cfg) {}
+  bool begin() {   // as InternalFileSystem::begin: on a failed mount, erase, format, mount again
+    if (Adafruit_LittleFS::begin()) return true;
+    for (uint32_t a = FD_FS_ADDR; a < FD_FS_ADDR + FS_SIZE; a += FLASH_NRF52_PAGE_SIZE) flash_nrf5x_erase(a);
+    format();
+    return Adafruit_LittleFS::begin();
+  }
+};
+static BridgeFS FS;
+#else
+#define FS InternalFS
+#endif
+
 #define CFG_FILE "/fdbridge.cfg"
 #define CFG_MAGIC 0x46444231u   // "FDB1"
 #define CFG_VERSION 2
@@ -42,8 +80,8 @@ static bool valid_order(void) {
 }
 
 bool store_load(void) {
-  InternalFS.begin();
-  File f(InternalFS);
+  FS.begin();
+  File f(FS);
   if (f.open(CFG_FILE, FILE_O_READ)) {
     Header h; Config c; uint32_t crc;
     memset(&c, 0, sizeof c);
@@ -64,8 +102,8 @@ bool store_load(void) {
 }
 
 bool store_save(void) {
-  InternalFS.remove(CFG_FILE);
-  File f(InternalFS);
+  FS.remove(CFG_FILE);
+  File f(FS);
   if (!f.open(CFG_FILE, FILE_O_WRITE)) return false;
   Header h = {CFG_MAGIC, CFG_VERSION, sizeof(Config)};
   uint32_t crc = crc32((const uint8_t *)&cfg, sizeof cfg);

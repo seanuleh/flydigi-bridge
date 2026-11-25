@@ -12,6 +12,8 @@ Xbox 360 pads. Layout: `firmware/` (Arduino sketches), `tools/` (host scripts), 
 | [docs/protocol.md](docs/protocol.md) | Touching radio code: packets, handshake, report layout, nRF52 address mapping |
 | [docs/firmware.md](docs/firmware.md) | Changing or flashing firmware: architecture, serial commands, USB |
 | [docs/tools.md](docs/tools.md) | Sniffing, capturing, finding addresses, mapping buttons |
+| [docs/holyiot.md](docs/holyiot.md) | HolyIoT PA dongle: magnet reset, Nordic bootloader, its build and flashing |
+| [docs/couch-test.md](docs/couch-test.md) | Range/couch test and antenna tuning on the Windows HTPC |
 | [docs/vendor-commands.md](docs/vendor-commands.md) | Settings, polling rate, rumble, Space Station / `A5` commands |
 | [docs/learn-and-pairing-plan.md](docs/learn-and-pairing-plan.md) | Learn mode, pairing, web UI, slot storage, hardware choices |
 | [docs/history-2026-06.md](docs/history-2026-06.md) | Only if you need June-era context (has wrong conclusions) |

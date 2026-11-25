@@ -1,11 +1,12 @@
 # Host tools (`tools/`)
 
-Python 3 with `pyserial` and `pyusb` (with libusb). macOS for the Swift and sudo tools. Each tool uses the first
-`/dev/cu.usbmodem*` port it finds.
+Python 3 with `pyserial` and `pyusb` (with libusb). macOS for the Swift and sudo tools. Unless noted, each tool
+uses the first `/dev/cu.usbmodem*` port it finds.
 
 | Tool | Use |
 |---|---|
-| `fd_host.py SECS OUT [cmd…]` | Open the board's serial port, send the commands, log every line to `OUT` for `SECS` seconds, and echo `#` lines |
+| `fd_host.py [--port P] SECS OUT [cmd…]` | Open the board's serial port, send the commands, log every line to `OUT` for `SECS` seconds, and echo `#` lines. Finds "Flydigi Bridge" by name (Windows too), else the first `/dev/cu.usbmodem*` |
+| `stat_summary.py LOG…` | Summarise bridge stats from an `fd_host.py` log: % linked, reports/s, dup/s, RSSI range, drops, channels, CRC-bad/s ([couch-test.md](couch-test.md)) |
 | `decode_esb.py LOG` | Decode raw WHAD-style dumps (`aa`+addr+…): realign the 9-bit header, check the CRC |
 | `find_addr.py CAP` | Promiscuous capture → most common 5-byte heads at every bit offset. The real address shows up as the top entry. Also counts hits on a target address hardcoded in the script |
 | `fd_cmd.py info\|rate <hz>\|raw <hex>` | Send Flydigi vendor commands (`A5 …`) through an **official dongle**. Needs `sudo` in a real terminal: it detaches Apple's Xbox driver, then reattaches it |

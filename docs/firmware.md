@@ -2,6 +2,7 @@
 
 Board: nRF52840 with the Adafruit nRF52 bootloader. Built as `adafruit:nrf52:feather52840`. The dev board is
 a Pro Micro nRF52840 (nice!nano clone): no user button, one LED. Build and flash commands are in the README.
+The HolyIoT PA dongle has a Nordic bootloader and its own variant: see [holyiot.md](holyiot.md).
 
 ## firmware/fd_bridge — the bridge
 

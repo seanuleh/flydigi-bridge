@@ -271,6 +271,7 @@ mapping stable across reboots: slot 0 is always player 1, and so on. `swap` chan
 | Nordic **nRF52840 Dongle (PCA10059)** | yes | RGB | USB-A stick that suits an HTPC. Ships with a Nordic DFU bootloader; an Adafruit UF2 bootloader can be flashed. Small PCB antenna. |
 | Seeed **XIAO nRF52840** | reset only | RGB | Tiny, USB-C, good bootloader support. |
 | nRF52840 module with **u.FL/external antenna** (e.g. Ebyte E73 / Holyiot boards) | varies | varies | Best range and reliability if the HTPC sits in a cabinet. |
+| **HolyIoT 21017 nRF52840+PA dongle** (in use) | magnet reset | green/red | External antenna + PA/LNA. Nordic bootloader, not UF2. See [holyiot.md](holyiot.md). |
 | Adafruit Feather nRF52840 Express | yes | NeoPixel | Same pinout as the build target; bulky. |
 
 ### Range: antenna, not chip (2026-11-11)

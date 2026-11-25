@@ -152,6 +152,33 @@ static void ack_timer_init() {
   NRF_PPI->CH[11].TEP = (uint32_t)&NRF_RADIO->TASKS_TXEN;
   NRF_PPI->CHENCLR = (1 << 10) | (1 << 11);
 }
+#ifndef FD_TXPOWER
+#define FD_TXPOWER RADIO_TXPOWER_TXPOWER_Pos8dBm   // chip maximum; boards with a PA set less in their variant.h
+#endif
+// External PA/LNA (HolyIoT 21017: 2401C front end, TXEN/RXEN pins set in its variant.h). Switched in hardware:
+// every TX starts from TIMER3 CC0 (ack path), so that event selects TX; every RADIO DISABLED (end of RX or TX,
+// aborts) selects RX. The front end switches in about 1 us; the radio's TX ramp-up is ~130 us.
+#ifdef FD_FEM_TXEN
+#define FEM_GT_TX 6   // GPIOTE channels: the core hands out 0.. for attachInterrupt, which this sketch doesn't use
+#define FEM_GT_RX 7
+static void fem_init() {
+  NRF_GPIOTE->CONFIG[FEM_GT_TX] = GPIOTE_CONFIG_MODE_Task | ((FD_FEM_TXEN & 31) << GPIOTE_CONFIG_PSEL_Pos) |
+      ((FD_FEM_TXEN >> 5) << GPIOTE_CONFIG_PORT_Pos) | (GPIOTE_CONFIG_OUTINIT_Low << GPIOTE_CONFIG_OUTINIT_Pos);
+  NRF_GPIOTE->CONFIG[FEM_GT_RX] = GPIOTE_CONFIG_MODE_Task | ((FD_FEM_RXEN & 31) << GPIOTE_CONFIG_PSEL_Pos) |
+      ((FD_FEM_RXEN >> 5) << GPIOTE_CONFIG_PORT_Pos) | (GPIOTE_CONFIG_OUTINIT_High << GPIOTE_CONFIG_OUTINIT_Pos);
+  NRF_PPI->FORK[11].TEP = (uint32_t)&NRF_GPIOTE->TASKS_SET[FEM_GT_TX];      // with ch 11: CC0 -> RADIO TXEN
+  NRF_PPI->CH[12].EEP = (uint32_t)&NRF_TIMER3->EVENTS_COMPARE[0];
+  NRF_PPI->CH[12].TEP = (uint32_t)&NRF_GPIOTE->TASKS_CLR[FEM_GT_RX];
+  NRF_PPI->CH[13].EEP = (uint32_t)&NRF_RADIO->EVENTS_DISABLED;
+  NRF_PPI->CH[13].TEP = (uint32_t)&NRF_GPIOTE->TASKS_CLR[FEM_GT_TX];
+  NRF_PPI->FORK[13].TEP = (uint32_t)&NRF_GPIOTE->TASKS_SET[FEM_GT_RX];
+  NRF_PPI->CHENSET = (1 << 12) | (1 << 13);
+}
+static inline void fem_rx() { NRF_GPIOTE->TASKS_CLR[FEM_GT_TX] = 1; NRF_GPIOTE->TASKS_SET[FEM_GT_RX] = 1; }
+#else
+static void fem_init() {}
+static inline void fem_rx() {}
+#endif
 static inline void ack_arm(bool on) {           // arm/disarm the END->TXEN path for the next RX packet
   if (on) NRF_PPI->CHENSET = (1 << 10) | (1 << 11); else NRF_PPI->CHENCLR = (1 << 10) | (1 << 11);
 }
@@ -177,6 +204,7 @@ static void radio_off() {
 }
 static void start_rx() {
   in_tx = false;
+  fem_rx();
   ack_arm(true);
   NRF_RADIO->PACKETPTR = (uint32_t)rx_buf;
   NRF_RADIO->SHORTS = SH_RX;
@@ -188,7 +216,7 @@ static void radio_init() {
   radio_off();
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit << RADIO_MODE_MODE_Pos;
   NRF_RADIO->MODECNF0 = RADIO_MODECNF0_RU_Default << RADIO_MODECNF0_RU_Pos;
-  NRF_RADIO->TXPOWER = RADIO_TXPOWER_TXPOWER_Pos8dBm;   // max; only affects our acks (controllers -> bridge is their power)
+  NRF_RADIO->TXPOWER = FD_TXPOWER;   // only affects our acks (controllers -> bridge is their power)
   NRF_RADIO->FREQUENCY = channel;
   NRF_RADIO->PCNF0 = (6 << RADIO_PCNF0_LFLEN_Pos) | (3 << RADIO_PCNF0_S1LEN_Pos);
   NRF_RADIO->PCNF1 = (RADIO_PCNF1_ENDIAN_Big << RADIO_PCNF1_ENDIAN_Pos) | (4 << RADIO_PCNF1_BALEN_Pos) | (32 << RADIO_PCNF1_MAXLEN_Pos);
@@ -201,6 +229,7 @@ static void radio_init() {
   NRF_RADIO->CRCINIT = 0xFFFF; NRF_RADIO->CRCPOLY = 0x11021;
   NRF_RADIO->INTENSET = RADIO_INTENSET_DISABLED_Msk;
   ack_timer_init();
+  fem_init();
   NVIC_SetPriority(RADIO_IRQn, 1);                      // 0 is the watchdog timer's, so it can see a stuck radio ISR
   NVIC_ClearPendingIRQ(RADIO_IRQn);
   NVIC_EnableIRQ(RADIO_IRQn);
@@ -496,6 +525,7 @@ static void learn_radio_init() {
   NVIC_DisableIRQ(RADIO_IRQn);
   ack_arm(false); NRF_TIMER3->TASKS_STOP = 1;
   radio_off();
+  fem_rx();
   NRF_RADIO->MODE = RADIO_MODE_MODE_Nrf_2Mbit << RADIO_MODE_MODE_Pos;
   NRF_RADIO->FREQUENCY = channel;
   NRF_RADIO->PCNF0 = 0;
@@ -723,7 +753,12 @@ static bool handle_word(char *line) {
   if (!strcmp(w, "cancel")) { learn_cancel(); reply_ok(w); return true; }
   if (!strcmp(w, "defaults")) { store_defaults(); for (int i = 0; i < NSLOT; i++) clear_slot_state(i); save_cfg(); reply_ok(w); return true; }
   if (!strcmp(w, "reboot")) { reply_ok(w); Serial.flush(); delay(50); NVIC_SystemReset(); }
+#ifdef FD_NORDIC_BOOTLOADER
+  // HolyIoT's Nordic bootloader ignored GPREGRET 0xB1 (tested 2026-11-25): only a pin reset (the magnet) enters it.
+  if (!strcmp(w, "bootloader")) { reply_err("hold a magnet to the dongle to enter its bootloader"); return true; }
+#else
   if (!strcmp(w, "bootloader")) { reply_ok(w); Serial.flush(); delay(50); enterUf2Dfu(); }
+#endif
   if (!strcmp(w, "hang")) { reply_ok(w); uint32_t t = millis(); while (millis() - t < 5000); return true; }   // watchdog test
   if (!strcmp(w, "version")) { con.println("{\"type\":\"version\",\"fw\":\"" FW_VERSION "\"}"); return true; }
   return false;
