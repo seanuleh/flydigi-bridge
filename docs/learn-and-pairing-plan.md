@@ -273,6 +273,30 @@ mapping stable across reboots: slot 0 is always player 1, and so on. `swap` chan
 | nRF52840 module with **u.FL/external antenna** (e.g. Ebyte E73 / Holyiot boards) | varies | varies | Best range and reliability if the HTPC sits in a cabinet. |
 | Adafruit Feather nRF52840 Express | yes | NeoPixel | Same pinout as the build target; bulky. |
 
+### Range: antenna, not chip (2026-11-11)
+
+Receive is the limit ([status.md](status.md)). Changing chip buys little: within the USB-capable nRF parts,
+sensitivity differs by only a few dB (from memory of the datasheets, unverified). The nRF54L15, nRF52832 and
+nRF52810 have no USB, so they're out. The nRF5340 would mean a Zephyr rewrite. Options, best value first:
+
+1. **Placement:** put the bridge on a USB extension cable, out of the HTPC case and in line of sight of the couch.
+2. **External antenna on the current board** (planned): remove the "C3" chip antenna and solder an SMA
+   pigtail to its feed pad (centre conductor) and the nearest ground (braid), then fit a 2.4 GHz dipole.
+   Unverified on this board. Risks: the antenna area has no copper ground (keepout), so the braid may need
+   a short run to the nearest GND; the matching network was tuned for the chip antenna; the pad can rip
+   off without strain relief. Measure RSSI before and after with the same couch test as the wire mod.
+3. **nRF52840 module with IPEX/u.FL** (Ebyte E73, Holyiot) needs native USB broken out and the Adafruit
+   UF2 bootloader.
+4. **PA/LNA front end** (nRF21540, Fanstel BT840X): a few dB of real receive gain plus louder acks. The
+   firmware would need to drive the FEM enable pins.
+
+### WiFi config: ESP32 alongside the nRF (idea)
+
+No nRF chip has built-in WiFi (the nRF7002 is a separate chip that pairs with the nRF5340, so it would mean a rewrite).
+Instead: an ESP32 (e.g. C3 SuperMini) serves the web page and relays the existing console protocol over a
+WebSocket ↔ UART (`Serial1` on the nRF). USB and the radio stay on the nRF. Keep the two antennas apart and
+put WiFi on a channel away from the controllers' channel (WiFi ch 1 ≈ 2401–2423 MHz vs Flydigi ch 68 = 2468 MHz).
+
 Keep the firmware independent of the board:
 - put a `board.h` with pins for the optional button and LEDs;
 - the web page is the main interface, while the button and LED are an optional extra.

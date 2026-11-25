@@ -65,6 +65,9 @@ Last updated 2026-11-10.
   web page now streams only while its tab is visible and closes the port when the page goes away. Tested on the
   HTPC: `hang` restarts it by itself; port held open unread for 20 s, no freeze. If `boot` ever says `watchdog`,
   the stage number says where it was stuck.
+- **Big-antenna HolyIoT board arrived (user, 2026-11-25).** Not tested yet. Next: flash it, repeat the
+  couch RSSI test (Blue alone, 90 s, same channel) and compare with the wire mod below. It needs native USB
+  and the Adafruit UF2 bootloader ([plan](learn-and-pairing-plan.md)).
 - **Antenna mod works (user, 2026-11-10).** 31 mm wire across the chip antenna. Couch, Blue alone, 90 s
   (fw 0.2.1): −60 to −75 dBm (was −83 to −85), 90–100 reports a second, linked the whole time apart from
   about 15 s of automatic channel moves (was about 12 of 60 s linked). Channels 5–8 are noisy (dips to 56
